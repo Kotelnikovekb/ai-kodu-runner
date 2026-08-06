@@ -1,0 +1,27 @@
+/target
+
+# Local runner state and exported job artifacts
+/artifacts/
+/runner.db
+/runner.db-shm
+/runner.db-wal
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# IDE and operating-system files
+.idea/
+.vscode/
+.DS_Store
+
+# Generated Dart/Flutter files inside example workspaces
+**/.dart_tool/
+**/build/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+
+# Skill registry checkout; keep installed project skills, not its Git cache
+**/.dart_skills/repos/

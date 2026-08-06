@@ -1,0 +1,47 @@
+{
+  "api_version": "omniroute.dev/v1alpha1",
+  "id": "flutter-agent-full-cycle",
+  "attempt": 0,
+  "executor": "docker",
+  "image": "flutter-opencode:local",
+  "working_directory": "/workspace",
+  "workspace": { "kind": "local", "path": "./examples" },
+  "environment_from_runner": ["OMNIROUTE_MCP_KEY", "OMNIROUTE_API_KEY", "OMNIROUTE_BASE_URL", "FREEMODEL_API_KEY"],
+  "secrets": [],
+  "workflow": {
+    "setup": [
+      {
+        "command": ["npx", "--yes", "skills", "add", "flutter/agent-plugins", "--skill", "*", "--agent", "opencode"],
+        "working_directory": "/workspace"
+      },
+      {
+        "command": ["npx", "--yes", "skills", "add", "dart-lang/skills", "--skill", "*", "--agent", "opencode"],
+        "working_directory": "/workspace"
+      }
+    ],
+    "initialize": {
+      "command": [
+        "opencode", "run", "--model", "freemodel/auto", "--format", "json",
+        "Inspect the current repository and create or update AGENTS.md in the project root. Document the project structure, Flutter/Dart commands, architecture, coding conventions, and the required verification commands. Do not implement the feature yet.",
+        "-f", "/workspace/prompt.md"
+      ],
+      "working_directory": "/workspace"
+    },
+    "agent": {
+      "command": ["opencode", "run", "--model", "freemodel/auto", "--format", "json", "First inspect the workspace and create or update /workspace/AGENTS.md with the project's structure, commands, architecture, and verification rules. This is the non-interactive equivalent of OpenCode /init; do not rely on a /init command being available. If the workspace has no Flutter app, create it first with flutter create ., then run flutter pub get before editing. Use Dart LSP diagnostics when useful. Then implement the task from /workspace/prompt.md. Read /workspace/.runner/feedback.md before each iteration and fix every reported verifier failure. Do not commit or push.", "-f", "/workspace/prompt.md", "-f", "/workspace/.runner/feedback.md"]
+    },
+    "verifiers": [
+      { "name": "flutter-pub-get", "command": ["flutter", "pub", "get"], "required": true },
+      { "name": "flutter-analyze", "command": ["flutter", "analyze"], "required": true },
+      { "name": "dart-format", "command": ["dart", "format", "--output=none", "--set-exit-if-changed", "lib", "test"], "required": true },
+      { "name": "flutter-test", "command": ["flutter", "test", "--machine"], "required": true },
+      { "name": "flutter-build-web", "command": ["flutter", "build", "web", "--release"], "required": true }
+    ],
+    "max_iterations": 3,
+    "feedback_file": "/workspace/.runner/feedback.md"
+  },
+  "resources": { "cpu": 4.0, "memory_mb": 8192, "pids": 512, "timeout_seconds": 3600 },
+  "network": { "mode": "bridge" },
+  "writable_rootfs": true,
+  "artifacts": ["**"]
+}

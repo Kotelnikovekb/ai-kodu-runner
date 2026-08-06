@@ -1,0 +1,15 @@
+{
+  "api_version": "omniroute.dev/v1alpha1",
+  "id": "case-failure",
+  "attempt": 1,
+  "executor": "docker",
+  "image": "alpine:3.20",
+  "command": ["sh", "-lc", "echo 'intentional verifier failure' >&2; exit 7"],
+  "working_directory": "/workspace",
+  "workspace": { "kind": "local", "path": "./examples/cases/03-failure" },
+  "environment_from_runner": [],
+  "secrets": [],
+  "resources": { "cpu": 1.0, "memory_mb": 256, "pids": 64, "timeout_seconds": 60 },
+  "network": { "mode": "none" },
+  "artifacts": []
+}

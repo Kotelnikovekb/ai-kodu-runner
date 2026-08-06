@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.idea
+.vscode
+.DS_Store
+target
+artifacts
+runner.db
+runner.db-shm
+runner.db-wal
+**/.dart_tool
+**/build
+**/.dart_skills/repos

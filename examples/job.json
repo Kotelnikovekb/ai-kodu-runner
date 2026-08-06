@@ -1,0 +1,19 @@
+{
+  "api_version": "omniroute.dev/v1alpha1",
+  "id": "local-smoke-test",
+  "attempt": 1,
+  "executor": "docker",
+  "image": "flutter-opencode:local",
+  "command": [
+    "sh",
+    "-lc",
+    "opencode run --format json -f /workspace/prompt.md 'Implement the attached task...' && flutter analyze && flutter test && flutter build web --release"
+  ],
+  "working_directory": "/workspace",
+  "workspace": { "kind": "local", "path": "./examples" },
+  "environment_from_runner": [],
+  "secrets": [],
+  "resources": { "cpu": 1.0, "memory_mb": 256, "pids": 64, "timeout_seconds": 60 },
+  "network": { "mode": "none" },
+  "artifacts": ["result.txt"]
+}

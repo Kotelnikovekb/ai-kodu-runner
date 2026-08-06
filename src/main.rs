@@ -1,0 +1,54 @@
+mod artifacts;
+mod cli;
+mod config;
+mod control;
+mod executor;
+mod janitor;
+mod job;
+mod journal;
+mod policy;
+mod state;
+mod telemetry;
+mod workspace;
+
+use anyhow::Result;
+use clap::Parser;
+use cli::{Cli, Command};
+use config::RunnerConfig;
+use executor::Executor;
+use executor::docker::DockerExecutor;
+use tracing::info;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    telemetry::init();
+    let cli = Cli::parse();
+    match cli.command {
+        Command::Version => println!("ai-codu-runer {}", env!("CARGO_PKG_VERSION")),
+        Command::Doctor => DockerExecutor::doctor().await?,
+        Command::Run { job, config } => {
+            let config = config.map_or_else(
+                || Ok(RunnerConfig::default_local()),
+                |path| RunnerConfig::load(&path),
+            )?;
+            let mut spec = job::JobSpec::from_path(&job)?;
+            if spec.attempt == 0 {
+                let journal = journal::Journal::open(&config.work_dir.join("runner.db"))?;
+                spec.attempt = journal.next_attempt(&spec.id)?;
+                info!(job_id=%spec.id, attempt=spec.attempt, "allocated local job attempt");
+            }
+            let result = DockerExecutor::new(config)?.run(spec, None).await?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::Cleanup { config } => {
+            let config = RunnerConfig::load(&config)?;
+            janitor::cleanup(&config).await?;
+        }
+        Command::Daemon { config } => {
+            let config = RunnerConfig::load(&config)?;
+            info!(runner_id = %config.runner_id(), "daemon starting");
+            control::run_daemon(config).await?;
+        }
+    }
+    Ok(())
+}

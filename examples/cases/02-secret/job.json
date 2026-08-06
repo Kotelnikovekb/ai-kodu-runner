@@ -1,0 +1,17 @@
+{
+  "api_version": "omniroute.dev/v1alpha1",
+  "id": "case-secret",
+  "attempt": 1,
+  "executor": "docker",
+  "image": "alpine:3.20",
+  "command": ["sh", "-lc", "set -eu; test \"$DEMO_SECRET\" = 'local-only-demo-secret'; echo 'secret was injected and validated without printing it'; printf 'secret check passed\n' > secret-check.txt"],
+  "working_directory": "/workspace",
+  "workspace": { "kind": "local", "path": "./examples/cases/02-secret" },
+  "environment_from_runner": [],
+  "secrets": [
+    { "name": "DEMO_SECRET", "value": "local-only-demo-secret" }
+  ],
+  "resources": { "cpu": 1.0, "memory_mb": 256, "pids": 64, "timeout_seconds": 60 },
+  "network": { "mode": "none" },
+  "artifacts": ["secret-check.txt"]
+}

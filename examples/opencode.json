@@ -1,0 +1,27 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "lsp": true,
+  "model": "freemodel/auto",
+  "provider": {
+    "freemodel": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "FreeModel Direct",
+      "options": {
+        "baseURL": "https://vip-sg.freemodel.dev/v1",
+        "apiKey": "{env:FREEMODEL_API_KEY}"
+      },
+      "models": {
+        "auto": { "name": "FreeModel Auto", "limit": { "context": 128000, "output": 32000 } }
+      }
+    }
+  },
+  "mcp": {
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp",
+      "headers": { "CONTEXT7_API_KEY": "{env:OMNIROUTE_MCP_KEY}" },
+      "enabled": true
+    }
+  },
+  "permission": { "skill": { "*": "allow" } }
+}

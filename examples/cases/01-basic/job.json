@@ -1,0 +1,15 @@
+{
+  "api_version": "omniroute.dev/v1alpha1",
+  "id": "case-basic",
+  "attempt": 1,
+  "executor": "docker",
+  "image": "alpine:3.20",
+  "command": ["sh", "-lc", "set -eu; echo 'basic stdout'; echo 'basic stderr' >&2; printf 'artifact from case basic\n' > result.txt"],
+  "working_directory": "/workspace",
+  "workspace": { "kind": "local", "path": "./examples/cases/01-basic" },
+  "environment_from_runner": [],
+  "secrets": [],
+  "resources": { "cpu": 1.0, "memory_mb": 256, "pids": 64, "timeout_seconds": 60 },
+  "network": { "mode": "none" },
+  "artifacts": ["result.txt"]
+}

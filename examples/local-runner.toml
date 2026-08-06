@@ -1,0 +1,21 @@
+work_dir = "."
+concurrency = 1
+name = "local"
+
+[docker]
+host = "auto"
+pull_policy = "if-not-present"
+
+[limits]
+max_cpu = 4.0
+max_memory_mb = 8192
+max_pids = 512
+max_timeout_seconds = 3600
+max_log_bytes = 52428800
+max_artifact_bytes = 524288000
+
+[security]
+allow_network = true
+allow_privileged = false
+allow_host_mounts = false
+allowed_environment = ["OPENCODE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CONTEXT7_API_KEY", "OMNIROUTE_MCP_KEY", "OMNIROUTE_API_KEY", "OMNIROUTE_BASE_URL", "FREEMODEL_API_KEY", "DEMO_SECRET"]

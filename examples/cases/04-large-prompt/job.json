@@ -1,0 +1,33 @@
+{
+  "api_version": "omniroute.dev/v1alpha1",
+  "id": "case-large-prompt",
+  "attempt": 1,
+  "executor": "docker",
+  "image": "registry.example.com/ai/flutter-opencode:stable@sha256:REPLACE_WITH_DIGEST",
+  "command": [
+    "sh",
+    "-lc",
+    "set -u; mkdir -p .omniroute/results; opencode run --format json -f /workspace/prompt.md 'Implement the attached task. Work directly in the workspace, run the required checks, and do not commit or push.' > .omniroute/results/opencode.json 2> .omniroute/results/opencode.stderr; agent_rc=$?; flutter pub get > .omniroute/results/flutter-pub-get.log 2>&1; pub_rc=$?; flutter analyze > .omniroute/results/flutter-analyze.log 2>&1; analyze_rc=$?; dart format --output=none --set-exit-if-changed lib test > .omniroute/results/dart-format.log 2>&1; format_rc=$?; flutter test --machine > .omniroute/results/flutter-test.json 2> .omniroute/results/flutter-test.stderr; test_rc=$?; printf '{\"agent\":%s,\"pub_get\":%s,\"analyze\":%s,\"format\":%s,\"test\":%s}\n' \"$agent_rc\" \"$pub_rc\" \"$analyze_rc\" \"$format_rc\" \"$test_rc\" > .omniroute/results/summary.json; [ $agent_rc -eq 0 ] && [ $pub_rc -eq 0 ] && [ $analyze_rc -eq 0 ] && [ $format_rc -eq 0 ] && [ $test_rc -eq 0 ]"
+  ],
+  "working_directory": "/workspace",
+  "workspace": {
+    "kind": "archive_url",
+    "url": "https://storage.example.com/flutter-project-with-prompt.tar?signature=REPLACE"
+  },
+  "environment_from_runner": [],
+  "secrets": [],
+  "resources": {
+    "cpu": 4.0,
+    "memory_mb": 8192,
+    "pids": 512,
+    "timeout_seconds": 3600
+  },
+  "network": {
+    "mode": "bridge"
+  },
+  "artifacts": [
+    ".omniroute/results/**",
+    "build/**",
+    "coverage/**"
+  ]
+}
