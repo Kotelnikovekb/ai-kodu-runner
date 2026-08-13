@@ -43,5 +43,5 @@
   "resources": { "cpu": 4.0, "memory_mb": 8192, "pids": 512, "timeout_seconds": 3600 },
   "network": { "mode": "bridge" },
   "writable_rootfs": true,
-  "artifacts": ["**"]
+  "artifacts": ["lib/**", "test/**", "assets/**", "web/**", "pubspec.yaml", "pubspec.lock", "analysis_options.yaml", "README.md", "AGENTS.md"]
 }

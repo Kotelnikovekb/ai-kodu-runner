@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::{fmt, fs, path::Path};
 
@@ -32,8 +33,20 @@ pub struct JobSpec {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkspaceSpec {
-    Local { path: String },
-    ArchiveUrl { url: String },
+    Local {
+        path: String,
+    },
+    ArchiveUrl {
+        url: String,
+    },
+    Git {
+        clone_url: String,
+        base_branch: String,
+        branch: String,
+        username: String,
+        token: String,
+        commit_message: String,
+    },
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Resources {
@@ -51,6 +64,8 @@ pub struct WorkflowSpec {
     #[serde(default)]
     pub setup: Vec<CommandSpec>,
     #[serde(default)]
+    pub services: Vec<ServiceSpec>,
+    #[serde(default)]
     pub initialize: Option<CommandSpec>,
     pub agent: CommandSpec,
     #[serde(default)]
@@ -61,6 +76,28 @@ pub struct WorkflowSpec {
     pub feedback_file: String,
     #[serde(default)]
     pub publish: Option<CommandSpec>,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ServiceSpec {
+    pub name: String,
+    pub image: String,
+    #[serde(default)]
+    pub alias: Option<String>,
+    #[serde(default)]
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub environment: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub healthcheck: Option<HealthcheckSpec>,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HealthcheckSpec {
+    pub command: Vec<String>,
+    #[serde(default = "default_healthcheck_timeout")]
+    pub timeout_seconds: u64,
+}
+fn default_healthcheck_timeout() -> u64 {
+    60
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CommandSpec {
@@ -106,10 +143,46 @@ pub struct JobResult {
     pub finished_at: String,
     pub duration_ms: u128,
     pub log_truncated: bool,
+    pub stdout: String,
+    pub stderr: String,
     pub artifacts: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub artifact_dir: Option<String>,
     pub sandbox: SandboxResult,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LogChunk {
+    pub attempt: u32,
+    pub sequence: u64,
+    pub stream: String,
+    pub phase: String,
+    pub message: String,
+}
+
+impl JobResult {
+    pub fn failed_from_error(spec: &JobSpec, error: impl std::fmt::Display) -> Self {
+        let now = Utc::now().to_rfc3339();
+        Self {
+            job_id: spec.id.clone(),
+            attempt: spec.attempt,
+            status: "failed".into(),
+            exit_code: None,
+            started_at: now.clone(),
+            finished_at: now,
+            duration_ms: 0,
+            log_truncated: false,
+            stdout: String::new(),
+            stderr: error.to_string(),
+            artifacts: Vec::new(),
+            artifact_dir: None,
+            sandbox: SandboxResult {
+                executor: spec.executor.clone(),
+                container_id: String::new(),
+                image_id: None,
+            },
+        }
+    }
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct SandboxResult {
@@ -154,6 +227,42 @@ impl JobSpec {
                 .any(|v| v.name.trim().is_empty() || v.command.is_empty())
             {
                 bail!("workflow verifier names and commands must not be empty")
+            }
+            let mut service_names = std::collections::HashSet::new();
+            if workflow.services.len() > 16 {
+                bail!("too many workflow services")
+            }
+            for service in &workflow.services {
+                if service.name.trim().is_empty()
+                    || !service_names.insert(&service.name)
+                    || service.image.trim().is_empty()
+                    || service.image.contains(char::is_whitespace)
+                    || !service
+                        .name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.')
+                {
+                    bail!("invalid workflow service")
+                }
+                if daemon && !service.image.contains("@sha256:") {
+                    bail!("daemon workflow services require image digests")
+                }
+                if let Some(alias) = &service.alias
+                    && (alias.trim().is_empty()
+                        || alias.contains(char::is_whitespace)
+                        || !alias.bytes().all(|b| {
+                            b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.'
+                        }))
+                {
+                    bail!("invalid workflow service alias")
+                }
+                if let Some(healthcheck) = &service.healthcheck
+                    && (healthcheck.command.is_empty()
+                        || healthcheck.timeout_seconds == 0
+                        || healthcheck.timeout_seconds > 3600)
+                {
+                    bail!("invalid workflow service healthcheck")
+                }
             }
         }
         if self.image.trim().is_empty() || self.image.contains(char::is_whitespace) {

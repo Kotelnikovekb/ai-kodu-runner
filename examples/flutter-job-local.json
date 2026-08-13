@@ -5,9 +5,9 @@
   "executor": "docker",
   "image": "flutter-opencode:local",
   "command": [
-    "sh",
-    "-lc",
-    "set -u; mkdir -p .omniroute/results; opencode run --format json -f /workspace/prompt.md 'Implement the attached task, use the project skills and Context7 when needed, run the checks, and do not commit or push.' > .omniroute/results/opencode.json 2> .omniroute/results/opencode.stderr; rc=$?; printf '%s\n' \"$rc\" > .omniroute/results/opencode.exit; exit $rc"
+    "opencode", "run", "--format", "json",
+    "Implement the attached task, use the project skills and Context7 when needed, run the checks, and do not commit or push.",
+    "-f", "/workspace/prompt.md"
   ],
   "working_directory": "/workspace",
   "workspace": {
@@ -30,7 +30,6 @@
   "network": {
     "mode": "bridge"
   },
-  "artifacts": [
-    ".omniroute/results/**"
-  ]
+  "writable_rootfs": true,
+  "artifacts": ["lib/**", "test/**", "assets/**", "web/**", "pubspec.yaml", "pubspec.lock", "analysis_options.yaml", "README.md", "AGENTS.md"]
 }

@@ -35,11 +35,24 @@ The service is split into CLI/config, JobSpec/policy, workspace/artifacts, journ
 
 Every job gets a temporary copied workspace, managed labels, a private network when requested, a read-only root filesystem, `/tmp` tmpfs, dropped capabilities, `no-new-privileges`, CPU/memory/PID limits, bounded logs, and a timeout. The runner never accepts a Docker `HostConfig` from the server. It does not mount the host Docker socket, use privileged mode, host network/PID/IPC, arbitrary devices, or arbitrary host mounts. Only configured environment variable names may cross the boundary, and values are never written to the SQLite journal.
 
+Workspace staging prunes generated directories named `.cache`, `.omniroute`,
+`.dart_tool`, `.runner-cache`, `build`, and `node_modules` at any depth. They must
+be recreated by setup commands or the toolchain inside the isolated job. This
+keeps dependency caches and OpenCode state out of source snapshots.
+
 The default root filesystem is read-only. A job may explicitly set
 `"writable_rootfs": true` when its image requires writes outside `/workspace`;
 this is needed by the sample Flutter image because Flutter updates its SDK cache
 and OpenCode writes its local log. Such a relaxation is visible in the JobSpec and
 should only be allowed for trusted, pinned images.
+
+Tool images keep `HOME` and all XDG directories under `/home/opencode`, never
+under `/workspace`. Project `opencode.json` files disable snapshots for
+non-interactive jobs. Downloads that are worth reusing should be baked into the
+image or provided by a future runner-managed cache volume; OpenCode session DBs,
+logs, locks, and snapshot repositories must not be shared as dependency caches.
+The sample one-shot images use `OPENCODE_DB=:memory:`; remove that override only
+when a product flow explicitly resumes an OpenCode session from durable storage.
 
 Task-specific secrets can be supplied through `JobSpec.secrets`, for example `{ "name": "OPENAI_API_KEY", "value": "..." }`. The value is held in memory and injected only into that job's container; it is excluded from logs, journal transitions, and `JobResult`. Secret names must be allowed by runner policy and are size-limited. For remote production control planes, prefer a future `secret_ref` instead of putting long-lived values into source-controlled job files. The legacy `environment_from_runner` field remains supported for local secrets supplied by the runner process.
 
@@ -78,10 +91,63 @@ written to `feedback_file`; the next agent iteration receives that file through 
 job's command. A job is completed only when all required verifiers pass. An optional
 `workflow.publish` argv command runs after all checks pass.
 
-For the local Flutter example, `"artifacts": ["**"]` exports the complete generated
-workspace, including source code, tests, build output and verifier reports. In
-production, prefer narrower patterns such as `app/**`, `build/**` and `coverage/**`
-to avoid exporting unnecessary files.
+Workflow jobs may also declare disposable backend services. Services are started
+on the job's private Docker network before `setup`, and are removed after artifact
+collection. They never publish ports on the host. A service healthcheck is an argv
+array executed from the runner until it succeeds:
+
+```json
+"services": [
+  {
+    "name": "postgres",
+    "image": "postgres:16@sha256:...",
+    "alias": "db",
+    "environment": {
+      "POSTGRES_DB": "test",
+      "POSTGRES_USER": "test",
+      "POSTGRES_PASSWORD": "test"
+    },
+    "healthcheck": {
+      "command": ["pg_isready", "-U", "test"],
+      "timeout_seconds": 60
+    }
+  },
+  {
+    "name": "redis",
+    "image": "redis:7@sha256:...",
+    "alias": "redis",
+    "healthcheck": { "command": ["redis-cli", "ping"] }
+  }
+]
+```
+
+Services require `network.mode = "bridge"`; the application reaches them by
+their aliases (`db`, `redis`, etc.). Runner-level mandatory verifiers can be
+configured under `[security].mandatory_verifiers` in `runner.toml`. They run in
+addition to job verifiers and cannot be omitted by a JobSpec.
+
+### Browser and device testing
+
+Browser tests are supported by putting Playwright or Cypress and the required
+browser binaries into the job image, then declaring the test command as a
+verifier. A browser service can also be started as a service container when the
+application is tested over the private job network.
+
+An Android emulator is different: it normally needs KVM and `/dev/kvm`, a
+privileged or specially configured container, and often a nested-virtualization
+capable host. The current runner deliberately does not expose devices or allow
+privileged containers, so it should not run Android emulators inside ordinary
+jobs. The safe extension is a separate device executor/worker with an explicit
+capability such as `android-emulator`, isolated device allocation, timeout and
+cleanup. The job then calls that worker or uses an external device farm. iOS
+simulators require a macOS worker and cannot be provided by a Linux Docker
+container.
+
+Artifact export is bounded by both `limits.max_artifact_bytes` and
+`limits.max_artifact_files`. Broad patterns such as `"**"` do not descend into
+generated/cache directories. A precise prefix such as `"build/**"` can opt in to
+a required generated tree. Prefer narrow source and report patterns so collection
+does not duplicate dependency caches after every job.
 
 Git and merge requests remain provider-neutral: use `setup` for clone/fetch/checkout
 and `publish` for push or a provider CLI such as `glab mr create`/`gh pr create`.
@@ -97,6 +163,13 @@ workflow. The image must contain Flutter, Dart, OpenCode, Node/npm and the verif
 CLIs. Its setup phase installs the official Flutter and Dart skills into the project
 for OpenCode. The agent then creates or updates `AGENTS.md` itself; this is used
 instead of relying on the interactive `/init` TUI command.
+
+Verify the image before running the job:
+
+```bash
+docker run --rm flutter-opencode:local \
+  sh -lc 'flutter --version && dart --version && opencode --version && node --version'
+```
 
 The workflow also has an explicit optional `initialize` phase. It runs a separate
 non-interactive `opencode run` before coding and is responsible only for creating or

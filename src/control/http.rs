@@ -1,7 +1,7 @@
 use crate::{
     config::RunnerConfig,
     control::{ControlPlane, LeasedJob},
-    job::{JobResult, JobSpec},
+    job::{JobResult, JobSpec, LogChunk},
 };
 use anyhow::{Context, Result};
 use reqwest::Client;
@@ -64,6 +64,20 @@ impl HttpControlPlane {
                 ))
                 .header("x-lease-id", lease)
                 .json(result),
+        )
+        .await?;
+        Ok(())
+    }
+    pub async fn log_chunk(&self, lease: &str, job_id: &str, chunk: &LogChunk) -> Result<()> {
+        self.request(
+            self.client
+                .post(format!(
+                    "{}/v1/runner/jobs/{}/logs",
+                    self.base.trim_end_matches('/'),
+                    job_id
+                ))
+                .header("x-lease-id", lease)
+                .json(chunk),
         )
         .await?;
         Ok(())

@@ -1,3 +1,4 @@
+use crate::job::CommandSpec;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::{
@@ -32,6 +33,12 @@ pub struct Limits {
     pub max_timeout_seconds: u64,
     pub max_log_bytes: u64,
     pub max_artifact_bytes: u64,
+    #[serde(default = "default_max_artifact_files")]
+    pub max_artifact_files: usize,
+}
+
+fn default_max_artifact_files() -> usize {
+    10_000
 }
 #[derive(Debug, Clone, Deserialize)]
 pub struct SecurityConfig {
@@ -41,6 +48,8 @@ pub struct SecurityConfig {
     #[allow(dead_code)]
     pub allow_host_mounts: bool,
     pub allowed_environment: Vec<String>,
+    #[serde(default)]
+    pub mandatory_verifiers: Vec<CommandSpec>,
 }
 
 impl RunnerConfig {
@@ -68,12 +77,14 @@ impl RunnerConfig {
                 max_timeout_seconds: 3600,
                 max_log_bytes: 50 * 1024 * 1024,
                 max_artifact_bytes: 500 * 1024 * 1024,
+                max_artifact_files: default_max_artifact_files(),
             },
             security: SecurityConfig {
                 allow_network: true,
                 allow_privileged: false,
                 allow_host_mounts: false,
                 allowed_environment: vec![],
+                mandatory_verifiers: vec![],
             },
         }
     }

@@ -69,3 +69,77 @@ cargo run -- run --job examples/cases/04-large-prompt/job-local.json
 ```
 
 This uses Alpine, verifies that `/workspace/prompt.md` is non-empty and contains the expected task, and returns `prompt-size.txt` and `prompt-check.txt` as artifacts. It does not run OpenCode or Flutter; use `job.json` with a real Flutter/OpenCode image for that stage.
+
+## 05 — Next.js AI Prompt & Task Studio
+
+```bash
+cargo run -- run --job examples/cases/05-nextjs-ai-prompt-chat/job.json
+```
+
+This case asks the agent to create a multi-page Next.js prompt/task workspace
+with Untitled UI and SQLite persistence. It verifies lint, TypeScript, tests,
+production build, React Doctor and Trivy. Build a local
+`nextjs-opencode:local` image with Node.js, OpenCode, React Doctor and Trivy.
+The mock AI provider keeps the test deterministic and does not require an
+external API key. Afrog, RustScan and reverse-skill are intentionally not part
+of this default case: they belong in a separately authorized active-security
+profile with a running target and explicit scope.
+
+Build the tool image from the repository root:
+
+```bash
+docker build \
+  -f examples/nextjs-opencode.Dockerfile \
+  -t nextjs-opencode:local \
+  .
+```
+
+Verify the image before running the job:
+
+```bash
+docker run --rm nextjs-opencode:local \
+  bash -lc 'node --version && npm --version && opencode --version && trivy --version'
+```
+
+The agent itself needs an LLM provider key. The case includes an OpenCode config
+for FreeModel and reads `FREEMODEL_API_KEY` only from the runner environment:
+
+```bash
+export FREEMODEL_API_KEY='your-key'
+export FREEMODEL_BASE_URL='https://api.freemodel.dev/v1'
+cargo run -- run \
+  --config examples/local-runner.toml \
+  --job examples/cases/05-nextjs-ai-prompt-chat/job.json
+```
+
+The application created by the agent still uses a deterministic mock AI provider;
+the key above is used only by OpenCode while implementing the task.
+
+## 06 — Python/FastAPI content-factory MVP
+
+This case runs OpenCode inside a Python 3.12 container and gives the job disposable
+PostgreSQL and Redis services. The agent implements the backend described in
+`IMPLEMENTATION_CASE.md`, including sources, evidence bundles, article versions,
+comments, Celery revisions and quality checks.
+
+Build the image from the repository root:
+
+```bash
+docker build \
+  -f examples/python-opencode.Dockerfile \
+  -t python-opencode:local \
+  .
+```
+
+The case uses FreeModel for OpenCode. The API key is supplied by the runner
+environment and is not stored in `job.json`:
+
+```bash
+export FREEMODEL_API_KEY='your-key'
+cargo run -- run \
+  --config examples/local-runner.toml \
+  --job examples/cases/06-python-fastapi-opencode/job.json
+```
+
+Application LLM and embedding models are configured by the generated project's
+`.env.example` and are not hardcoded in source code. Tests must use fake providers.
