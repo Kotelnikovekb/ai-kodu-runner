@@ -36,6 +36,7 @@ ENV FLUTTER_HOME=/usr/local/flutter \
     PUB_CACHE=/home/opencode/.pub-cache \
     CI=true \
     OPENCODE_DB=:memory: \
+    OPENCODE_DISABLE_AUTOUPDATE=true \
     OPENCODE_EXPERIMENTAL_LSP_TOOL=true \
     ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${ndk_version} \
     PATH=/home/opencode/.opencode/bin:/usr/local/flutter/bin:/usr/local/flutter/bin/cache/dart-sdk/bin:${PATH}
