@@ -1,0 +1,148 @@
+# Copyright 2026 Kotelnikovekb
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://apache.org
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+name: Build tool images
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'tool-images/**'
+      - '.github/workflows/tool-images.yml'
+  pull_request:
+    paths:
+      - 'tool-images/**'
+      - '.github/workflows/tool-images.yml'
+
+permissions:
+  contents: read
+  actions: write
+
+env:
+  DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.image }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: flutter-opencode
+            dockerfile: images/flutter-opencode.Dockerfile
+          - image: nextjs-opencode
+            dockerfile: images/nextjs-opencode.Dockerfile
+          - image: python-opencode
+            dockerfile: images/python-opencode.Dockerfile
+          - image: universal-opencode
+            dockerfile: images/universal-opencode.Dockerfile
+          - image: php-opencode
+            dockerfile: images/php-opencode.Dockerfile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKERHUB_NAMESPACE }}/${{ matrix.image }}
+          tags: |
+            type=sha,prefix=sha-
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build image for pull request
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./tool-images
+          file: ./tool-images/${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: false
+          tags: local/${{ matrix.image }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  sbom-and-license-scan:
+    name: SBOM and license scan ${{ matrix.image }}
+    if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - flutter-opencode
+          - nextjs-opencode
+          - python-opencode
+          - universal-opencode
+          - php-opencode
+    steps:
+      - name: Generate SBOM and scan licenses
+        env:
+          TRIVY_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          TRIVY_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
+          IMAGE: ${{ env.DOCKERHUB_NAMESPACE }}/${{ matrix.image }}:latest
+        run: |
+          docker run --rm \
+            -e TRIVY_USERNAME \
+            -e TRIVY_PASSWORD \
+            -v "$PWD:/work" \
+            -w /work \
+            aquasec/trivy:0.73.0 image \
+            --scanners vuln,license \
+            --format cyclonedx \
+            --output "sbom-${{ matrix.image }}.json" \
+            "$IMAGE"
+          docker run --rm \
+            -e TRIVY_USERNAME \
+            -e TRIVY_PASSWORD \
+            aquasec/trivy:0.73.0 image \
+            --scanners license \
+            --format table \
+            "$IMAGE"
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.image }}
+          path: sbom-${{ matrix.image }}.json
+          if-no-files-found: error
+
+      - name: Build and push image
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./tool-images
+          file: ./tool-images/${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}

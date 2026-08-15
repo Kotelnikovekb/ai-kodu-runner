@@ -194,3 +194,13 @@ cargo test
 ```
 
 The unit tests cover policy clamping, lifecycle transitions and archive/path safety. Docker-dependent checks should be run when Docker is available and are expected to skip in CI environments without a daemon.
+
+## License and third-party components
+
+This project is licensed under the Apache License, Version 2.0. See
+[`LICENSE.md`](LICENSE.md). The main third-party components and tool-image
+dependencies are listed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+The published Docker images contain software from their base images and package
+managers. Their exact dependency inventory may change with pinned runtime and
+base-image versions; releases should be accompanied by the CI-generated SBOM.
