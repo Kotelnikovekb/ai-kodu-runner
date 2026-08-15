@@ -17,6 +17,14 @@ Runnable examples are documented in [`examples/cases/README.md`](examples/cases/
 
 The local example uses the current directory as a workspace and `network: none`. For `workspace.kind = local`, the path must be inside configured `work_dir`. `archive_url` accepts HTTPS tar archives only; absolute paths, `..`, symlinks and hardlinks are rejected.
 
+Git workspaces clone and check out the requested `branch`, then fetch
+`base_branch` so agents can inspect the implementation diff. The optional
+`head_sha` and `base_sha` fields make checkout validation immutable: the job
+fails during preparation if either fetched revision differs. `publish_mode`
+controls runner-managed commits and accepts `disabled`, `if_changed` (the
+backward-compatible default), or `required`. A clean `if_changed` workspace is
+a successful no-op; a clean `required` workspace fails explicitly.
+
 ## Commands
 
 ```text

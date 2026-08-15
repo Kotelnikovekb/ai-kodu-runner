@@ -39,6 +39,39 @@ use std::{
     time::Instant,
 };
 
+fn redact_diagnostic_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, value) in object {
+                let normalized = key.to_ascii_lowercase();
+                if normalized == "secrets" {
+                    if let serde_json::Value::Array(secrets) = value {
+                        for secret in secrets.iter_mut() {
+                            if let Some(value) = secret.get_mut("value") {
+                                *value = serde_json::Value::String("<redacted>".into());
+                            }
+                        }
+                    }
+                    redact_diagnostic_value(value);
+                } else if matches!(
+                    normalized.as_str(),
+                    "token" | "password" | "secret" | "apikey" | "api_key" | "authorization"
+                ) {
+                    *value = serde_json::Value::String("<redacted>".into());
+                } else {
+                    redact_diagnostic_value(value);
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                redact_diagnostic_value(value);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn write_failure_diagnostics(
     workspace: &Path,
     spec: &JobSpec,
@@ -49,15 +82,9 @@ fn write_failure_diagnostics(
     let dir = workspace.join(".runner/diagnostics");
     fs::create_dir_all(&dir)?;
     let mut job = serde_json::to_value(spec)?;
-    if let Some(secrets) = job
-        .get_mut("secrets")
-        .and_then(|value| value.as_array_mut())
-    {
-        for secret in secrets {
-            if let Some(value) = secret.get_mut("value") {
-                *value = serde_json::Value::String("<redacted>".into());
-            }
-        }
+    redact_diagnostic_value(&mut job);
+    if let Some(command) = job.get_mut("command") {
+        *command = serde_json::json!(["<redacted: command may contain credentials>"]);
     }
     fs::write(dir.join("job.json"), serde_json::to_vec_pretty(&job)?)?;
     fs::write(
@@ -74,7 +101,6 @@ fn write_failure_diagnostics(
     fs::write(dir.join("stderr.log"), stderr)?;
     for (source, target) in [
         ("prompt.md", "prompt.md"),
-        ("opencode.json", "opencode.json"),
         ("AGENTS.md", "AGENTS.md"),
         (".runner/feedback.md", "feedback.md"),
     ] {
@@ -101,11 +127,11 @@ fn runtime_tmpfs() -> HashMap<String, String> {
         ),
         (
             "/home/opencode/.config/opencode".into(),
-            "rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=32m".into(),
+            "rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=512m".into(),
         ),
         (
-            "/home/opencode/.local/share/opencode/log".into(),
-            "rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=128m".into(),
+            "/home/opencode/.local/share/opencode".into(),
+            "rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=1g".into(),
         ),
         (
             "/home/opencode/.local/state".into(),
@@ -116,10 +142,62 @@ fn runtime_tmpfs() -> HashMap<String, String> {
             "rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=1g".into(),
         ),
         (
+            "/home/opencode/.cache/opencode".into(),
+            "rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=128m".into(),
+        ),
+        (
             "/home/opencode/.pub-cache".into(),
             "rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=1g".into(),
         ),
     ])
+}
+
+fn command_with_opencode_retry(command: &[String]) -> Vec<String> {
+    if command.len() != 3
+        || command[0] != "bash"
+        || command[1] != "-lc"
+        || !command[2].contains("opencode run ")
+        || !command[2].contains(".omniroute/results/opencode.json")
+    {
+        return command.to_vec();
+    }
+
+    let script = command[2].replacen(
+        "opencode run ",
+        "opencode run --print-logs --log-level INFO ",
+        1,
+    );
+    let wrapped = format!(
+        r#"set +e
+(
+{script}
+)
+runner_rc=$?
+if [ "$runner_rc" -ne 0 ] && grep -Fq 'Unexpected server error' .omniroute/results/opencode.json 2>/dev/null; then
+    echo 'OpenCode reported an unexpected error; retrying once in 2 seconds' >&2
+    sleep 2
+    (
+{script}
+    )
+    runner_rc=$?
+fi
+exit "$runner_rc""#
+    );
+
+    vec![command[0].clone(), command[1].clone(), wrapped]
+}
+
+fn headless_opencode_environment(mut env: Vec<String>, command: &[String]) -> Vec<String> {
+    if !command.iter().any(|arg| arg.contains("opencode run ")) {
+        return env;
+    }
+
+    // Session titles are irrelevant for headless jobs. Disabling the hidden
+    // title agent also avoids a second concurrent request through custom
+    // OpenAI-compatible providers.
+    env.push(r#"OPENCODE_CONFIG_CONTENT={"agent":{"title":{"disable":true}}}"#.into());
+    env.push("OPENCODE_DISABLE_MODELS_FETCH=true".into());
+    env
 }
 
 pub struct DockerExecutor {
@@ -406,6 +484,116 @@ impl DockerExecutor {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        command_with_opencode_retry, headless_opencode_environment, redact_diagnostic_value,
+        runtime_tmpfs,
+    };
+
+    #[test]
+    fn runtime_tmpfs_includes_writable_opencode_cache() {
+        let mounts = runtime_tmpfs();
+        let options = mounts
+            .get("/home/opencode/.cache/opencode")
+            .expect("OpenCode cache must be writable with a read-only root filesystem");
+
+        assert!(options.contains("rw"));
+        assert!(options.contains("uid=10001"));
+        assert!(options.contains("gid=10001"));
+        assert!(options.contains("mode=0700"));
+    }
+
+    #[test]
+    fn runtime_tmpfs_includes_all_opencode_persistent_state() {
+        let mounts = runtime_tmpfs();
+        let options = mounts
+            .get("/home/opencode/.local/share/opencode")
+            .expect("OpenCode logs, snapshots, and future state must be writable");
+
+        assert!(options.contains("rw"));
+        assert!(options.contains("uid=10001"));
+        assert!(options.contains("gid=10001"));
+        assert!(options.contains("size=1g"));
+        assert!(!mounts.contains_key("/home/opencode/.local/share/opencode/log"));
+    }
+
+    #[test]
+    fn runtime_tmpfs_gives_provider_install_enough_space() {
+        let mounts = runtime_tmpfs();
+        let options = mounts
+            .get("/home/opencode/.config/opencode")
+            .expect("OpenCode config directory must be writable");
+
+        assert!(options.contains("size=512m"));
+    }
+
+    #[test]
+    fn wraps_generated_opencode_command_with_transient_server_retry() {
+        let command = vec![
+            "bash".into(),
+            "-lc".into(),
+            "opencode run task | tee .omniroute/results/opencode.json; exit ${PIPESTATUS[0]}"
+                .into(),
+        ];
+
+        let wrapped = command_with_opencode_retry(&command);
+
+        assert_eq!(wrapped.len(), 3);
+        assert!(wrapped[2].contains("Unexpected server error"));
+        assert_eq!(
+            wrapped[2]
+                .matches("opencode run --print-logs --log-level INFO task")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn leaves_non_opencode_commands_unchanged() {
+        let command = vec!["bash".into(), "-lc".into(), "flutter test".into()];
+
+        assert_eq!(command_with_opencode_retry(&command), command);
+    }
+
+    #[test]
+    fn disables_title_agent_only_for_headless_opencode() {
+        let opencode = vec!["bash".into(), "-lc".into(), "opencode run task".into()];
+        let flutter = vec!["bash".into(), "-lc".into(), "flutter test".into()];
+
+        let opencode_env = headless_opencode_environment(Vec::new(), &opencode);
+        let flutter_env = headless_opencode_environment(Vec::new(), &flutter);
+
+        assert!(
+            opencode_env
+                .iter()
+                .any(|value| value.contains(r#""title":{"disable":true}"#))
+        );
+        assert!(
+            opencode_env
+                .iter()
+                .any(|value| value == "OPENCODE_DISABLE_MODELS_FETCH=true")
+        );
+        assert!(flutter_env.is_empty());
+    }
+
+    #[test]
+    fn redacts_nested_diagnostic_credentials() {
+        let mut value = serde_json::json!({
+            "workspace": { "token": "git-token", "username": "bot" },
+            "provider": { "apiKey": "api-key" },
+            "secrets": [{ "name": "MODEL_KEY", "value": "secret-value" }]
+        });
+
+        redact_diagnostic_value(&mut value);
+
+        assert_eq!(value["workspace"]["token"], "<redacted>");
+        assert_eq!(value["provider"]["apiKey"], "<redacted>");
+        assert_eq!(value["secrets"][0]["value"], "<redacted>");
+        assert_eq!(value["workspace"]["username"], "bot");
+    }
+}
 #[async_trait::async_trait]
 impl Executor for DockerExecutor {
     async fn run(
@@ -459,7 +647,10 @@ impl Executor for DockerExecutor {
             None
         };
         let name = format!("omniroute-job-{}", Uuid::new_v4());
-        let env = policy::environment_for_job(&spec, &self.config)?;
+        let env = headless_opencode_environment(
+            policy::environment_for_job(&spec, &self.config)?,
+            &spec.command,
+        );
         let labels = HashMap::from([
             ("omniroute.managed".into(), "true".into()),
             ("omniroute.runner_id".into(), self.config.runner_id()),
@@ -500,7 +691,7 @@ impl Executor for DockerExecutor {
                 }),
                 Config {
                     image: Some(spec.image.clone()),
-                    cmd: Some(spec.command.clone()),
+                    cmd: Some(command_with_opencode_retry(&spec.command)),
                     working_dir: Some(spec.working_directory.clone()),
                     env: Some(env),
                     host_config: Some(host),

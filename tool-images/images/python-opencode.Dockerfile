@@ -13,7 +13,11 @@
 # limitations under the License.
 FROM python:3.12-slim
 
+ARG OPENCODE_VERSION=1.18.18
+
 LABEL org.opencontainers.image.title="Python OpenCode tool image" \
+    org.opencontainers.image.description="Python 3.12 and headless OpenCode tool image" \
+    org.opencontainers.image.version="${OPENCODE_VERSION}" \
     org.opencontainers.image.licenses="Apache-2.0" \
     org.opencontainers.image.source="https://github.com/KotelnikoffDev/ai-kodu-runner"
 
@@ -22,26 +26,59 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HOME=/home/opencode \
     XDG_CONFIG_HOME=/home/opencode/.config \
     XDG_DATA_HOME=/home/opencode/.local/share \
+    XDG_CACHE_HOME=/home/opencode/.cache \
     XDG_STATE_HOME=/home/opencode/.local/state \
+    NPM_CONFIG_CACHE=/home/opencode/.cache/npm \
+    PIP_CACHE_DIR=/workspace/.cache/pip \
+    CI=true \
     OPENCODE_DB=:memory: \
-    PATH="/home/opencode/.local/bin:/home/opencode/.opencode/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-    PIP_CACHE_DIR=/home/opencode/.cache/pip
+    OPENCODE_DISABLE_AUTOUPDATE=true \
+    OPENCODE_EXPERIMENTAL_LSP_TOOL=true \
+    PATH="/home/opencode/.local/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# hadolint ignore=DL3008
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates curl git nodejs npm passwd \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --shell /bin/bash opencode \
-    && mkdir -p /home/opencode/.opencode /home/opencode/.config \
-        /home/opencode/.local/share /home/opencode/.local/state /home/opencode/.cache/pip /workspace \
-    && chown -R opencode:opencode /home/opencode /workspace
+    && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        git \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && useradd --create-home --uid 10001 --user-group --shell /bin/bash opencode \
+    && mkdir -p /home/opencode/.config/opencode \
+        /home/opencode/.local/share/opencode \
+        /home/opencode/.local/state \
+        /home/opencode/.cache/opencode \
+        /home/opencode/.cache/npm \
+        /workspace \
+    && chown -R opencode:opencode /home/opencode /workspace \
+    && rm -rf /var/lib/apt/lists/*
 
-USER opencode
-RUN curl -fsSL https://opencode.ai/install | bash
+RUN curl -fsSL https://opencode.ai/install \
+        | bash -s -- --version "${OPENCODE_VERSION}" --no-modify-path \
+    && install -m 0755 /home/opencode/.opencode/bin/opencode /usr/local/bin/opencode \
+    && rm -rf /home/opencode/.opencode \
+    && test "$(opencode --version)" = "${OPENCODE_VERSION}"
 
-USER root
-RUN ln -sf /home/opencode/.opencode/bin/opencode /usr/local/bin/opencode
-USER opencode
+COPY --chmod=0755 runner-entrypoint.sh /usr/local/bin/runner-entrypoint
 
 WORKDIR /workspace
-ENTRYPOINT []
+USER 10001:10001
+
+RUN bash -lc 'test "$(id -u)" = 10001 \
+    && test "$(command -v python)" = /usr/local/bin/python \
+    && test "$(command -v pip)" = /usr/local/bin/pip \
+    && test "$(command -v node)" = /usr/bin/node \
+    && test "$(command -v npm)" = /usr/bin/npm \
+    && test "$(command -v opencode)" = /usr/local/bin/opencode \
+    && python --version \
+    && pip --version \
+    && node --version \
+    && npm --version \
+    && opencode --version'
+
+ENTRYPOINT ["runner-entrypoint"]
 CMD ["bash"]

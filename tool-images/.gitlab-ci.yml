@@ -63,6 +63,8 @@ dockerfile-lint:
         --cache-from type=registry,ref="$IMAGE:buildcache" \
         --cache-to type=registry,ref="$IMAGE:buildcache",mode=max \
         --push .
+      docker pull --platform linux/amd64 "$TAG_SHA"
+      ./smoke-test.sh "$TAG_SHA" "$IMAGE_KIND"
   after_script:
     - docker logout || true
 
@@ -70,63 +72,68 @@ build-flutter:
   extends: .build-and-push
   variables:
     IMAGE_NAME: flutter-opencode
+    IMAGE_KIND: flutter
     DOCKERFILE: images/flutter-opencode.Dockerfile
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-      changes: [images/flutter-opencode.Dockerfile]
+      changes: [images/flutter-opencode.Dockerfile, runner-entrypoint.sh, smoke-test.sh]
     - if: '$CI_COMMIT_TAG'
-      changes: [images/flutter-opencode.Dockerfile]
+      changes: [images/flutter-opencode.Dockerfile, runner-entrypoint.sh, smoke-test.sh]
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: [images/flutter-opencode.Dockerfile]
+      changes: [images/flutter-opencode.Dockerfile, runner-entrypoint.sh, smoke-test.sh]
 
 build-nextjs:
   extends: .build-and-push
   variables:
     IMAGE_NAME: nextjs-opencode
+    IMAGE_KIND: nextjs
     DOCKERFILE: images/nextjs-opencode.Dockerfile
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-      changes: [images/nextjs-opencode.Dockerfile]
+      changes: [images/nextjs-opencode.Dockerfile, runner-entrypoint.sh, smoke-test.sh]
     - if: '$CI_COMMIT_TAG'
-      changes: [images/nextjs-opencode.Dockerfile]
+      changes: [images/nextjs-opencode.Dockerfile, runner-entrypoint.sh, smoke-test.sh]
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: [images/nextjs-opencode.Dockerfile]
+      changes: [images/nextjs-opencode.Dockerfile, runner-entrypoint.sh, smoke-test.sh]
 
 build-python:
   extends: .build-and-push
   variables:
     IMAGE_NAME: python-opencode
+    IMAGE_KIND: python
     DOCKERFILE: images/python-opencode.Dockerfile
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-      changes: [images/python-opencode.Dockerfile]
+      changes: [images/python-opencode.Dockerfile, runner-entrypoint.sh, smoke-test.sh]
     - if: '$CI_COMMIT_TAG'
-      changes: [images/python-opencode.Dockerfile]
+      changes: [images/python-opencode.Dockerfile, runner-entrypoint.sh, smoke-test.sh]
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: [images/python-opencode.Dockerfile]
+      changes: [images/python-opencode.Dockerfile, runner-entrypoint.sh, smoke-test.sh]
 
 build-universal:
   extends: .build-and-push
   variables:
     IMAGE_NAME: universal-opencode
+    IMAGE_KIND: universal
     DOCKERFILE: images/universal-opencode.Dockerfile
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-      changes: [images/universal-opencode.Dockerfile]
+      changes: [images/universal-opencode.Dockerfile, runner-entrypoint.sh, smoke-test.sh]
     - if: '$CI_COMMIT_TAG'
-      changes: [images/universal-opencode.Dockerfile]
+      changes: [images/universal-opencode.Dockerfile, runner-entrypoint.sh, smoke-test.sh]
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: [images/universal-opencode.Dockerfile]
+      changes: [images/universal-opencode.Dockerfile, runner-entrypoint.sh, smoke-test.sh]
 
 build-php:
   extends: .build-and-push
   variables:
     IMAGE_NAME: php-opencode
+    IMAGE_KIND: php
     DOCKERFILE: images/php-opencode.Dockerfile
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-      changes: [images/php-opencode.Dockerfile]
+      changes: [images/php-opencode.Dockerfile, runner-entrypoint.sh, smoke-test.sh]
     - if: '$CI_COMMIT_TAG'
-      changes: [images/php-opencode.Dockerfile]
+      changes: [images/php-opencode.Dockerfile, runner-entrypoint.sh, smoke-test.sh]
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes: [images/php-opencode.Dockerfile]
+      changes: [images/php-opencode.Dockerfile, runner-entrypoint.sh, smoke-test.sh]

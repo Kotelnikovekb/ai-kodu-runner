@@ -13,7 +13,11 @@
 # limitations under the License.
 FROM debian:bookworm-slim
 
+ARG OPENCODE_VERSION=1.18.18
+
 LABEL org.opencontainers.image.title="Universal OpenCode tool image" \
+    org.opencontainers.image.description="Headless OpenCode image with common CLI tools" \
+    org.opencontainers.image.version="${OPENCODE_VERSION}" \
     org.opencontainers.image.licenses="Apache-2.0" \
     org.opencontainers.image.source="https://github.com/KotelnikoffDev/ai-kodu-runner"
 
@@ -22,8 +26,12 @@ ENV HOME=/home/opencode \
     XDG_DATA_HOME=/home/opencode/.local/share \
     XDG_CACHE_HOME=/home/opencode/.cache \
     XDG_STATE_HOME=/home/opencode/.local/state \
+    NPM_CONFIG_CACHE=/home/opencode/.cache/npm \
+    CI=true \
     OPENCODE_DB=:memory: \
-    PATH=/home/opencode/.local/bin:/home/opencode/.opencode/bin:${PATH}
+    OPENCODE_DISABLE_AUTOUPDATE=true \
+    OPENCODE_EXPERIMENTAL_LSP_TOOL=true \
+    PATH="/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # hadolint ignore=DL3008
 RUN apt-get update \
@@ -42,17 +50,34 @@ RUN apt-get update \
         zip \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd \
     && useradd --create-home --uid 10001 --user-group --shell /bin/bash opencode \
-    && mkdir -p /home/opencode/.config /home/opencode/.local/share \
-        /home/opencode/.local/state /home/opencode/.cache /workspace \
+    && mkdir -p /home/opencode/.config/opencode \
+        /home/opencode/.local/share/opencode \
+        /home/opencode/.local/state \
+        /home/opencode/.cache/opencode \
+        /home/opencode/.cache/npm \
+        /workspace \
     && chown -R opencode:opencode /home/opencode /workspace \
     && rm -rf /var/lib/apt/lists/*
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-USER 10001:10001
-RUN curl -fsSL https://opencode.ai/install | bash \
-    && opencode --version
+RUN curl -fsSL https://opencode.ai/install \
+        | bash -s -- --version "${OPENCODE_VERSION}" --no-modify-path \
+    && install -m 0755 /home/opencode/.opencode/bin/opencode /usr/local/bin/opencode \
+    && rm -rf /home/opencode/.opencode \
+    && test "$(opencode --version)" = "${OPENCODE_VERSION}"
+
+COPY --chmod=0755 runner-entrypoint.sh /usr/local/bin/runner-entrypoint
 
 WORKDIR /workspace
-ENTRYPOINT []
+USER 10001:10001
+
+RUN bash -lc 'test "$(id -u)" = 10001 \
+    && test "$(command -v opencode)" = /usr/local/bin/opencode \
+    && command -v git \
+    && command -v rg \
+    && command -v fd \
+    && opencode --version'
+
+ENTRYPOINT ["runner-entrypoint"]
 CMD ["bash"]

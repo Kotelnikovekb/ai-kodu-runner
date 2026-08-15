@@ -14,7 +14,41 @@
 docker build -f images/flutter-opencode.Dockerfile -t flutter-opencode:local .
 docker build -f images/nextjs-opencode.Dockerfile -t nextjs-opencode:local .
 docker build -f images/python-opencode.Dockerfile -t python-opencode:local .
+docker build -f images/php-opencode.Dockerfile -t php-opencode:local .
+docker build -f images/universal-opencode.Dockerfile -t universal-opencode:local .
 ```
+
+## Общий runtime-контракт
+
+Все образы:
+
+- запускаются пользователем `opencode` с UID/GID `10001`;
+- устанавливают фиксированную версию OpenCode в `/usr/local/bin/opencode`;
+- сохраняют `HOME` и XDG-каталоги под `/home/opencode`;
+- используют `OPENCODE_DB=:memory:` и отключают auto-update;
+- содержат полный `/home/opencode/.local/share/opencode`, включая snapshots;
+- запускаются через `runner-entrypoint`, который подготавливает writable runtime
+  directories и, для Flutter, восстанавливает подготовленный pub cache;
+- проходят build-time проверку login-shell PATH и обязательных инструментов;
+- рассчитаны на read-only root filesystem с tmpfs mounts Runner.
+
+Language-specific dependency caches, которым не соответствует отдельный tmpfs
+Runner, направлены в writable `/workspace/.cache`.
+
+После локальной сборки проверьте тот же read-only контракт, который использует
+Runner:
+
+```bash
+./smoke-test.sh flutter-opencode:local flutter
+./smoke-test.sh nextjs-opencode:local nextjs
+./smoke-test.sh python-opencode:local python
+./smoke-test.sh php-opencode:local php
+./smoke-test.sh universal-opencode:local universal
+```
+
+Smoke test запускает образ без сети и с read-only rootfs, проверяет UID, PATH и
+запись в каждый OpenCode tmpfs path. Это защищает от повторения ошибки
+`EROFS` при создании `/home/opencode/.local/share/opencode/snapshot`.
 
 В GitLab добавьте masked/protected variables `DOCKERHUB_USERNAME` и
 `DOCKERHUB_TOKEN`. Pipeline собирает образы параллельно и публикует commit SHA,
@@ -26,9 +60,11 @@ branch tag и `latest` только из default branch. Для Git tag публ
 
 Workflow [`tool-images.yml`](../.github/workflows/tool-images.yml) запускается
 только если изменились `tool-images/**` или сам workflow. Для Pull Request он
-только собирает все образы под `linux/amd64` без публикации. После push в
+собирает все образы под `linux/amd64` без публикации и выполняет read-only
+smoke test. После push в
 `main`/`master` каждый образ собирается отдельной matrix job и публикуется в
-Docker Hub как multi-arch manifest (`linux/amd64` + `linux/arm64`).
+Docker Hub как multi-arch manifest (`linux/amd64` + `linux/arm64`). Затем
+опубликованный `linux/amd64` образ проходит тот же smoke test.
 
 В настройках GitHub Repository добавьте:
 

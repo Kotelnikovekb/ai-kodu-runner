@@ -15,7 +15,11 @@ FROM aquasec/trivy:0.74.0 AS trivy
 
 FROM node:22-bookworm
 
+ARG OPENCODE_VERSION=1.18.18
+
 LABEL org.opencontainers.image.title="Next.js OpenCode tool image" \
+    org.opencontainers.image.description="Node.js 22, Trivy, and headless OpenCode tool image" \
+    org.opencontainers.image.version="${OPENCODE_VERSION}" \
     org.opencontainers.image.licenses="Apache-2.0" \
     org.opencontainers.image.source="https://github.com/KotelnikoffDev/ai-kodu-runner"
 
@@ -25,27 +29,56 @@ ENV HOME=/home/opencode \
     XDG_CACHE_HOME=/home/opencode/.cache \
     XDG_STATE_HOME=/home/opencode/.local/state \
     NPM_CONFIG_CACHE=/home/opencode/.cache/npm \
-    TRIVY_CACHE_DIR=/home/opencode/.cache/trivy \
+    TRIVY_CACHE_DIR=/workspace/.cache/trivy \
+    CI=true \
     OPENCODE_DB=:memory: \
+    OPENCODE_DISABLE_AUTOUPDATE=true \
+    OPENCODE_EXPERIMENTAL_LSP_TOOL=true \
     NPM_CONFIG_UPDATE_NOTIFIER=false \
-    NEXT_TELEMETRY_DISABLED=1
+    NEXT_TELEMETRY_DISABLED=1 \
+    PATH="/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
+# hadolint ignore=DL3008
 RUN apt-get update \
-    && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends ca-certificates curl git bash build-essential \
-    && rm -rf /var/lib/apt/lists/* \
-    && npm install --global opencode-ai@latest npm@latest \
-    && npm cache clean --force \
-    && useradd --create-home --home-dir /home/opencode --shell /bin/bash opencode \
-    && mkdir -p /home/opencode/.config /home/opencode/.local/share \
-        /home/opencode/.local/state /home/opencode/.cache/npm /home/opencode/.cache/trivy /workspace \
-    && chown -R opencode:opencode /home/opencode /workspace
+    && apt-get install -y --no-install-recommends \
+        bash \
+        build-essential \
+        ca-certificates \
+        curl \
+        git \
+    && useradd --create-home --uid 10001 --user-group --shell /bin/bash opencode \
+    && mkdir -p /home/opencode/.config/opencode \
+        /home/opencode/.local/share/opencode \
+        /home/opencode/.local/state \
+        /home/opencode/.cache/opencode \
+        /home/opencode/.cache/npm \
+        /workspace \
+    && chown -R opencode:opencode /home/opencode /workspace \
+    && rm -rf /var/lib/apt/lists/*
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN curl -fsSL https://opencode.ai/install \
+        | bash -s -- --version "${OPENCODE_VERSION}" --no-modify-path \
+    && install -m 0755 /home/opencode/.opencode/bin/opencode /usr/local/bin/opencode \
+    && rm -rf /home/opencode/.opencode \
+    && test "$(opencode --version)" = "${OPENCODE_VERSION}"
 
 COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
-
-RUN node --version && npm --version && opencode --version && trivy --version
+COPY --chmod=0755 runner-entrypoint.sh /usr/local/bin/runner-entrypoint
 
 WORKDIR /workspace
-USER opencode
-ENTRYPOINT []
+USER 10001:10001
+
+RUN bash -lc 'test "$(id -u)" = 10001 \
+    && test "$(command -v node)" = /usr/local/bin/node \
+    && test "$(command -v npm)" = /usr/local/bin/npm \
+    && test "$(command -v opencode)" = /usr/local/bin/opencode \
+    && command -v trivy \
+    && node --version \
+    && npm --version \
+    && opencode --version \
+    && trivy --version'
+
+ENTRYPOINT ["runner-entrypoint"]
 CMD ["bash"]

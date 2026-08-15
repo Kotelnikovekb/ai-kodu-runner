@@ -41,14 +41,19 @@ jobs:
         include:
           - image: flutter-opencode
             dockerfile: images/flutter-opencode.Dockerfile
+            kind: flutter
           - image: nextjs-opencode
             dockerfile: images/nextjs-opencode.Dockerfile
+            kind: nextjs
           - image: python-opencode
             dockerfile: images/python-opencode.Dockerfile
+            kind: python
           - image: universal-opencode
             dockerfile: images/universal-opencode.Dockerfile
+            kind: universal
           - image: php-opencode
             dockerfile: images/php-opencode.Dockerfile
+            kind: php
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -84,13 +89,24 @@ jobs:
         with:
           context: ./tool-images
           file: ./tool-images/${{ matrix.dockerfile }}
-          platforms: linux/amd64
+          platforms: ${{ github.event_name == 'push' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           push: ${{ github.event_name == 'push' }}
+          load: ${{ github.event_name == 'pull_request' }}
           tags: |
             ${{ env.DOCKERHUB_NAMESPACE }}/${{ matrix.image }}:${{ github.sha }}
             ${{ steps.meta.outputs.tags }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      - name: Pull pushed image for smoke test
+        if: github.event_name == 'push'
+        run: docker pull --platform linux/amd64 "${{ env.DOCKERHUB_NAMESPACE }}/${{ matrix.image }}:${{ github.sha }}"
+
+      - name: Smoke test read-only runtime contract
+        run: >-
+          ./tool-images/smoke-test.sh
+          "${{ env.DOCKERHUB_NAMESPACE }}/${{ matrix.image }}:${{ github.sha }}"
+          "${{ matrix.kind }}"
 
   sbom-and-license-scan:
     name: SBOM and license scan ${{ matrix.image }}

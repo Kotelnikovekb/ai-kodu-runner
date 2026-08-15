@@ -11,7 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use crate::{config::RunnerConfig, job::WorkspaceSpec};
+use crate::{
+    config::RunnerConfig,
+    job::{GitPublishMode, WorkspaceSpec},
+};
 use anyhow::{Context, Result, bail};
 use std::{
     fs,
@@ -39,8 +42,10 @@ pub async fn prepare(spec: &WorkspaceSpec, _c: &RunnerConfig) -> Result<Prepared
         WorkspaceSpec::ArchiveUrl { url } => download_archive(url, dir.path()).await?,
         WorkspaceSpec::Git {
             clone_url,
-            base_branch: _,
+            base_branch,
             branch,
+            base_sha,
+            head_sha,
             username,
             token,
             ..
@@ -52,6 +57,9 @@ pub async fn prepare(spec: &WorkspaceSpec, _c: &RunnerConfig) -> Result<Prepared
                     "clone",
                     "--depth",
                     "1",
+                    "--branch",
+                    branch,
+                    "--single-branch",
                     clone_url,
                     ".",
                 ])
@@ -65,15 +73,23 @@ pub async fn prepare(spec: &WorkspaceSpec, _c: &RunnerConfig) -> Result<Prepared
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 bail!("git clone failed: {}", stderr.trim())
             }
-            let branch_output = Command::new("git")
-                .args(["checkout", "-B", branch])
-                .current_dir(dir.path())
-                .output()
-                .context("create git branch")?;
-            if !branch_output.status.success() {
-                let stderr = String::from_utf8_lossy(&branch_output.stderr);
-                bail!("git branch creation failed: {}", stderr.trim())
+            if base_branch != branch {
+                let base_refspec =
+                    format!("+refs/heads/{base_branch}:refs/remotes/origin/{base_branch}");
+                git_with_auth(
+                    dir.path(),
+                    token,
+                    &["fetch", "--depth", "1", "origin", &base_refspec],
+                    "fetch base branch",
+                )?;
             }
+            verify_revision(dir.path(), "HEAD", head_sha.as_deref(), "head_sha")?;
+            verify_revision(
+                dir.path(),
+                &format!("refs/remotes/origin/{base_branch}"),
+                base_sha.as_deref(),
+                "base_sha",
+            )?;
         }
     };
     if dir.path().join(".git").is_dir() {
@@ -90,11 +106,15 @@ pub fn publish_git(spec: &WorkspaceSpec, dir: &Path) -> Result<()> {
         branch,
         token,
         commit_message,
+        publish_mode,
         ..
     } = spec
     else {
         return Ok(());
     };
+    if *publish_mode == GitPublishMode::Disabled {
+        return Ok(());
+    }
     let status = Command::new("git")
         .args(["config", "user.name", "AI Kodu Runner"])
         .current_dir(dir)
@@ -118,6 +138,19 @@ pub fn publish_git(spec: &WorkspaceSpec, dir: &Path) -> Result<()> {
         bail!("git add failed")
     }
     let status = Command::new("git")
+        .args(["diff", "--cached", "--quiet", "--exit-code"])
+        .current_dir(dir)
+        .status()
+        .context("inspect staged git changes")?;
+    match status.code() {
+        Some(0) if *publish_mode == GitPublishMode::Required => {
+            bail!("git publish required changes, but the working tree is clean")
+        }
+        Some(0) => return Ok(()),
+        Some(1) => {}
+        _ => bail!("git diff failed"),
+    }
+    let status = Command::new("git")
         .args(["commit", "-m", commit_message])
         .current_dir(dir)
         .status()?;
@@ -136,6 +169,48 @@ pub fn publish_git(spec: &WorkspaceSpec, dir: &Path) -> Result<()> {
         .status()?;
     if !status.success() {
         bail!("git push failed")
+    }
+    Ok(())
+}
+
+fn git_with_auth(dir: &Path, token: &str, args: &[&str], operation: &str) -> Result<()> {
+    let output = Command::new("git")
+        .args([
+            "-c",
+            &format!("http.extraheader=Authorization: Bearer {token}"),
+        ])
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .with_context(|| operation.to_owned())?;
+    if !output.status.success() {
+        bail!(
+            "{operation} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+    }
+    Ok(())
+}
+
+fn verify_revision(dir: &Path, revision: &str, expected: Option<&str>, name: &str) -> Result<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let output = Command::new("git")
+        .args(["rev-parse", revision])
+        .current_dir(dir)
+        .output()
+        .with_context(|| format!("resolve {name}"))?;
+    if !output.status.success() {
+        bail!("{name} {expected} is not available in the prepared workspace")
+    }
+    let actual = String::from_utf8_lossy(&output.stdout);
+    if actual.trim() != expected {
+        bail!(
+            "{name} mismatch: expected {expected}, got {}",
+            actual.trim()
+        )
     }
     Ok(())
 }
@@ -252,6 +327,40 @@ async fn download_archive(url: &str, to: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    fn git_workspace(
+        clone_url: String,
+        base_sha: Option<String>,
+        head_sha: Option<String>,
+        publish_mode: GitPublishMode,
+    ) -> WorkspaceSpec {
+        WorkspaceSpec::Git {
+            clone_url,
+            base_branch: "main".into(),
+            branch: "task/change".into(),
+            base_sha,
+            head_sha,
+            username: "runner".into(),
+            token: String::new(),
+            commit_message: "runner changes".into(),
+            publish_mode,
+        }
+    }
+
     #[test]
     fn rejects_escape() {
         assert!("../etc/passwd".split('/').any(|x| x == ".."));
@@ -281,5 +390,78 @@ mod tests {
         assert!(destination.path().join("lib/main.dart").is_file());
         assert!(!destination.path().join("node_modules").exists());
         assert!(!destination.path().join("packages/app/.dart_tool").exists());
+    }
+
+    #[tokio::test]
+    async fn prepares_remote_task_branch_and_base_revision() {
+        let root = tempfile::tempdir().unwrap();
+        let origin = root.path().join("origin.git");
+        let source = root.path().join("source");
+        fs::create_dir(&source).unwrap();
+        git(root.path(), &["init", "--bare", origin.to_str().unwrap()]);
+        git(&source, &["init", "-b", "main"]);
+        git(&source, &["config", "user.name", "Test"]);
+        git(&source, &["config", "user.email", "test@example.com"]);
+        fs::write(source.join("README.md"), "base\n").unwrap();
+        git(&source, &["add", "README.md"]);
+        git(&source, &["commit", "-m", "base"]);
+        let base_sha = git(&source, &["rev-parse", "HEAD"]);
+        git(&source, &["checkout", "-b", "task/change"]);
+        fs::write(source.join("README.md"), "task\n").unwrap();
+        git(&source, &["commit", "-am", "task"]);
+        let head_sha = git(&source, &["rev-parse", "HEAD"]);
+        git(
+            &source,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        git(&source, &["push", "origin", "main", "task/change"]);
+
+        let spec = git_workspace(
+            origin.to_string_lossy().into_owned(),
+            Some(base_sha.clone()),
+            Some(head_sha.clone()),
+            GitPublishMode::IfChanged,
+        );
+        let prepared = prepare(&spec, &RunnerConfig::default_local())
+            .await
+            .unwrap();
+
+        assert_eq!(git(prepared.dir.path(), &["rev-parse", "HEAD"]), head_sha);
+        assert_eq!(
+            git(
+                prepared.dir.path(),
+                &["rev-parse", "refs/remotes/origin/main"]
+            ),
+            base_sha
+        );
+        assert_eq!(
+            fs::read_to_string(prepared.dir.path().join("README.md")).unwrap(),
+            "task\n"
+        );
+    }
+
+    #[test]
+    fn publish_if_changed_accepts_clean_workspace() {
+        let repo = tempfile::tempdir().unwrap();
+        git(repo.path(), &["init", "-b", "task/change"]);
+        git(repo.path(), &["config", "user.name", "Test"]);
+        git(repo.path(), &["config", "user.email", "test@example.com"]);
+        fs::write(repo.path().join("README.md"), "clean\n").unwrap();
+        git(repo.path(), &["add", "README.md"]);
+        git(repo.path(), &["commit", "-m", "initial"]);
+        let spec = git_workspace(String::new(), None, None, GitPublishMode::IfChanged);
+
+        publish_git(&spec, repo.path()).unwrap();
+        assert_eq!(git(repo.path(), &["rev-list", "--count", "HEAD"]), "1");
+    }
+
+    #[test]
+    fn required_publish_rejects_clean_workspace() {
+        let repo = tempfile::tempdir().unwrap();
+        git(repo.path(), &["init", "-b", "task/change"]);
+        let spec = git_workspace(String::new(), None, None, GitPublishMode::Required);
+
+        let error = publish_git(&spec, repo.path()).unwrap_err();
+        assert!(error.to_string().contains("required changes"));
     }
 }

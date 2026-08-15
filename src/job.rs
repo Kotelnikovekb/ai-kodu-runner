@@ -56,10 +56,25 @@ pub enum WorkspaceSpec {
         clone_url: String,
         base_branch: String,
         branch: String,
+        #[serde(default)]
+        base_sha: Option<String>,
+        #[serde(default)]
+        head_sha: Option<String>,
         username: String,
         token: String,
         commit_message: String,
+        #[serde(default)]
+        publish_mode: GitPublishMode,
     },
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GitPublishMode {
+    Disabled,
+    #[default]
+    IfChanged,
+    Required,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Resources {
