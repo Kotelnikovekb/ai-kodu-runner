@@ -47,11 +47,15 @@ fn runtime_tmpfs() -> HashMap<String, String> {
     HashMap::from([
         ("/tmp".into(), "rw,noexec,nosuid,size=256m".into()),
         (
-            "/home/opencode/.config".into(),
+            "/home/opencode/.opencode".into(),
+            "rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=64m".into(),
+        ),
+        (
+            "/home/opencode/.config/opencode".into(),
             "rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=32m".into(),
         ),
         (
-            "/home/opencode/.local/share".into(),
+            "/home/opencode/.local/share/opencode/log".into(),
             "rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=128m".into(),
         ),
         (
@@ -59,7 +63,7 @@ fn runtime_tmpfs() -> HashMap<String, String> {
             "rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=32m".into(),
         ),
         (
-            "/home/opencode/.cache".into(),
+            "/home/opencode/.cache/npm".into(),
             "rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=1g".into(),
         ),
         (
