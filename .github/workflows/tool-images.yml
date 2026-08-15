@@ -29,7 +29,7 @@ permissions:
   actions: write
 
 env:
-  DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+  DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE || 'kotelnikoffdev' }}
 
 jobs:
   build:
@@ -76,15 +76,16 @@ jobs:
             type=ref,event=branch
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build image for pull request
-        if: github.event_name == 'pull_request'
+      - name: Build image
         uses: docker/build-push-action@v6
         with:
           context: ./tool-images
           file: ./tool-images/${{ matrix.dockerfile }}
           platforms: linux/amd64
-          push: false
-          tags: local/${{ matrix.image }}:${{ github.sha }}
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ${{ env.DOCKERHUB_NAMESPACE }}/${{ matrix.image }}:${{ github.sha }}
+            ${{ steps.meta.outputs.tags }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
@@ -103,29 +104,49 @@ jobs:
           - universal-opencode
           - php-opencode
     steps:
-      - name: Generate SBOM and scan licenses
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Pull image to the GitHub runner Docker daemon
         env:
-          TRIVY_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          TRIVY_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
-          IMAGE: ${{ env.DOCKERHUB_NAMESPACE }}/${{ matrix.image }}:latest
+          IMAGE: ${{ env.DOCKERHUB_NAMESPACE }}/${{ matrix.image }}:${{ github.sha }}
+        run: docker pull --platform linux/amd64 "$IMAGE"
+
+      - name: Generate SBOM and scan licenses
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.DOCKERHUB_NAMESPACE }}/${{ matrix.image }}:${{ github.sha }}
+          format: cyclonedx
+          output: sbom-${{ matrix.image }}.json
+          scanners: vuln,license
+          ignore-unfixed: true
+
+      - name: Scan image vulnerabilities and licenses
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.DOCKERHUB_NAMESPACE }}/${{ matrix.image }}:${{ github.sha }}
+          format: table
+          scanners: vuln,license
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+
+      - name: Verify image reference
+        env:
+          IMAGE: ${{ env.DOCKERHUB_NAMESPACE }}/${{ matrix.image }}:${{ github.sha }}
         run: |
-          docker run --rm \
-            -e TRIVY_USERNAME \
-            -e TRIVY_PASSWORD \
-            -v "$PWD:/work" \
-            -w /work \
-            aquasec/trivy:0.73.0 image \
-            --scanners vuln,license \
-            --format cyclonedx \
-            --output "sbom-${{ matrix.image }}.json" \
-            "$IMAGE"
-          docker run --rm \
-            -e TRIVY_USERNAME \
-            -e TRIVY_PASSWORD \
-            aquasec/trivy:0.73.0 image \
-            --scanners license \
-            --format table \
-            "$IMAGE"
+          case "$IMAGE" in
+            /*) echo "Invalid image reference: $IMAGE" >&2; exit 1 ;;
+          esac
+          test -n "${IMAGE%%/*}" || {
+            echo "Image reference has no registry namespace: $IMAGE" >&2
+            exit 1
+          }
 
       - name: Upload SBOM
         uses: actions/upload-artifact@v4

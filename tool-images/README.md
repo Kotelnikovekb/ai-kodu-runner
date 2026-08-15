@@ -32,9 +32,16 @@ Docker Hub как multi-arch manifest (`linux/amd64` + `linux/arm64`).
 
 В настройках GitHub Repository добавьте:
 
-- variable `DOCKERHUB_NAMESPACE` — username или organization в Docker Hub;
+- variable `DOCKERHUB_NAMESPACE` — username или organization в Docker Hub
+  (необязательно, по умолчанию `kotelnikoffdev`);
 - secret `DOCKERHUB_USERNAME`;
 - secret `DOCKERHUB_TOKEN` с правом записи.
+
+После публикации workflow скачивает каждый образ на обычный GitHub-hosted
+runner и сканирует его через Trivy. Docker socket внутрь job-контейнера не
+передаётся. Образ сканируется по полному адресу вида
+`kotelnikoffdev/flutter-opencode:<commit-sha>`, поэтому имя не превращается в
+`/flutter-opencode:latest` при отсутствии repository variable.
 
 Основной workflow runner-проекта имеет `paths-ignore: tool-images/**`, поэтому
 изменение только Dockerfile или документации образов не запускает Rust CI.
