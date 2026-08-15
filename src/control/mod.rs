@@ -13,7 +13,7 @@
 // limitations under the License.
 pub mod http;
 pub mod mock;
-use crate::job::{JobResult, JobSpec};
+use crate::job::{JobResult, JobSpec, LogChunk};
 use crate::{config::RunnerConfig, executor::Executor};
 use anyhow::Result;
 use std::sync::Arc;
@@ -37,9 +37,10 @@ pub struct LeasedJob {
 pub trait ControlPlane: Send + Sync {
     async fn lease(&self) -> Result<Option<LeasedJob>>;
     async fn complete(&self, lease_id: &str, result: &JobResult) -> Result<()>;
+    async fn log_chunk(&self, lease_id: &str, job_id: &str, chunk: &LogChunk) -> Result<()>;
 }
 pub async fn run_daemon(config: RunnerConfig) -> Result<()> {
-    let plane_client = http::HttpControlPlane::new(&config)?;
+    let plane_client: Arc<dyn ControlPlane> = Arc::new(http::HttpControlPlane::new(&config)?);
     let concurrency = config.concurrency.unwrap_or(1).max(1);
     let permits = Arc::new(Semaphore::new(concurrency));
     let mut jobs = JoinSet::new();
@@ -98,7 +99,7 @@ pub async fn run_daemon(config: RunnerConfig) -> Result<()> {
 }
 
 async fn run_leased_job(
-    plane: http::HttpControlPlane,
+    plane: Arc<dyn ControlPlane>,
     config: RunnerConfig,
     job: LeasedJob,
 ) -> Result<()> {

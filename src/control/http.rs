@@ -107,6 +107,10 @@ impl ControlPlane for HttpControlPlane {
     async fn complete(&self, lease_id: &str, result: &JobResult) -> Result<()> {
         self.complete(lease_id, result).await
     }
+
+    async fn log_chunk(&self, lease_id: &str, job_id: &str, chunk: &LogChunk) -> Result<()> {
+        self.log_chunk(lease_id, job_id, chunk).await
+    }
 }
 #[allow(dead_code)]
 #[derive(Debug, Serialize)]
