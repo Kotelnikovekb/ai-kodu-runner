@@ -89,15 +89,16 @@ RUN flutter config --enable-android --enable-linux-desktop --enable-web --no-ena
     && flutter --version \
     && chown -R 10001:10001 /usr/local/flutter /home/opencode
 
-USER 10001:10001
-
 RUN flutter config --no-analytics \
     && flutter --version \
     && dart --version
 
 RUN curl -fsSL https://opencode.ai/install | bash \
     && install -m 0755 "$(command -v opencode)" /usr/local/bin/opencode \
+    && chown -R 10001:10001 /home/opencode \
     && opencode --version
+
+USER 10001:10001
 
 WORKDIR /workspace
 ENTRYPOINT []
