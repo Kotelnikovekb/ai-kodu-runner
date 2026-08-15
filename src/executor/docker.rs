@@ -14,7 +14,7 @@
 use super::Executor;
 use crate::{
     artifacts,
-    config::RunnerConfig,
+    config::{RunnerConfig, platform_from_env, validate_platform},
     job::{CommandSpec, JobResult, JobSpec, LogChunk, SandboxResult, ServiceSpec, WorkflowSpec},
     journal::Journal,
     policy, workspace,
@@ -33,9 +33,58 @@ use futures_util::StreamExt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     collections::HashMap,
+    fs,
+    path::Path,
     sync::{Arc, Mutex},
     time::Instant,
 };
+
+fn write_failure_diagnostics(
+    workspace: &Path,
+    spec: &JobSpec,
+    phase: Option<&str>,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Result<()> {
+    let dir = workspace.join(".runner/diagnostics");
+    fs::create_dir_all(&dir)?;
+    let mut job = serde_json::to_value(spec)?;
+    if let Some(secrets) = job
+        .get_mut("secrets")
+        .and_then(|value| value.as_array_mut())
+    {
+        for secret in secrets {
+            if let Some(value) = secret.get_mut("value") {
+                *value = serde_json::Value::String("<redacted>".into());
+            }
+        }
+    }
+    fs::write(dir.join("job.json"), serde_json::to_vec_pretty(&job)?)?;
+    fs::write(
+        dir.join("meta.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "job_id": spec.id,
+            "attempt": spec.attempt,
+            "image": spec.image,
+            "network": spec.network.mode,
+            "phase": phase,
+        }))?,
+    )?;
+    fs::write(dir.join("stdout.jsonl"), stdout)?;
+    fs::write(dir.join("stderr.log"), stderr)?;
+    for (source, target) in [
+        ("prompt.md", "prompt.md"),
+        ("opencode.json", "opencode.json"),
+        ("AGENTS.md", "AGENTS.md"),
+        (".runner/feedback.md", "feedback.md"),
+    ] {
+        let source = workspace.join(source);
+        if source.is_file() {
+            fs::copy(source, dir.join(target))?;
+        }
+    }
+    Ok(())
+}
 use tokio::sync::mpsc::{Sender, error::TrySendError};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -79,7 +128,7 @@ pub struct DockerExecutor {
     log_sender: Option<Sender<LogChunk>>,
     log_sequence: AtomicU64,
     dropped_log_chunks: AtomicU64,
-    log_context: Arc<Mutex<Option<(String, u32)>>>,
+    log_context: Arc<Mutex<Option<(String, u32, String)>>>,
 }
 impl DockerExecutor {
     pub fn new(config: RunnerConfig) -> Result<Self> {
@@ -89,6 +138,7 @@ impl DockerExecutor {
         config: RunnerConfig,
         log_sender: Option<Sender<LogChunk>>,
     ) -> Result<Self> {
+        validate_platform(&config.docker.platform)?;
         let docker =
             Docker::connect_with_local_defaults().context("connect to Docker Engine/Desktop")?;
         Ok(Self {
@@ -104,7 +154,14 @@ impl DockerExecutor {
         self.log_sequence.store(0, Ordering::Relaxed);
         self.dropped_log_chunks.store(0, Ordering::Relaxed);
         if let Ok(mut context) = self.log_context.lock() {
-            *context = Some((spec.id.clone(), spec.attempt));
+            *context = Some((spec.id.clone(), spec.attempt, "running".into()));
+        }
+    }
+    fn set_log_phase(&self, phase: &str) {
+        if let Ok(mut context) = self.log_context.lock()
+            && let Some((_, _, current_phase)) = context.as_mut()
+        {
+            *current_phase = phase.into();
         }
     }
     fn emit_log(&self, stream: &str, bytes: &[u8]) {
@@ -114,7 +171,7 @@ impl DockerExecutor {
         let Ok(context) = self.log_context.lock() else {
             return;
         };
-        let Some((_, attempt)) = context.as_ref() else {
+        let Some((_, attempt, phase)) = context.as_ref() else {
             return;
         };
         for chunk in bytes.chunks(64 * 1024) {
@@ -123,7 +180,8 @@ impl DockerExecutor {
                 attempt: *attempt,
                 sequence,
                 stream: stream.to_owned(),
-                phase: "running".into(),
+                phase: phase.clone(),
+                level: Some(if stream == "stderr" { "warn" } else { "info" }.into()),
                 message: String::from_utf8_lossy(chunk).into_owned(),
             };
             match sender.try_send(chunk) {
@@ -149,7 +207,7 @@ impl DockerExecutor {
             .create_container(
                 Some(CreateContainerOptions::<String> {
                     name: test.clone(),
-                    platform: None,
+                    platform: Some(platform_from_env()),
                 }),
                 Config::<String> {
                     image: Some("alpine:3.20".into()),
@@ -182,6 +240,7 @@ impl DockerExecutor {
             let mut s = self.docker.create_image(
                 Some(CreateImageOptions {
                     from_image: image,
+                    platform: self.config.docker.platform.as_str(),
                     ..Default::default()
                 }),
                 None,
@@ -219,7 +278,7 @@ impl DockerExecutor {
                 .create_container(
                     Some(CreateContainerOptions::<String> {
                         name: format!("omniroute-service-{}-{}", service.name, Uuid::new_v4()),
-                        platform: None,
+                        platform: Some(self.config.docker.platform.clone()),
                     }),
                     Config {
                         image: Some(service.image.clone()),
@@ -355,6 +414,18 @@ impl Executor for DockerExecutor {
         cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<JobResult> {
         self.begin_log_stream(&spec);
+        self.set_log_phase(if spec.workflow.is_some() {
+            "prepare"
+        } else {
+            "command"
+        });
+        info!(
+            job_id = %spec.id,
+            image = %spec.image,
+            network = %spec.network.mode,
+            platform = %self.config.docker.platform,
+            "job execution started"
+        );
         let resources = policy::validate(&spec, &self.config, false)?;
         if let Some(workflow) = spec.workflow.clone() {
             return self.run_workflow(spec, workflow, resources).await;
@@ -425,7 +496,7 @@ impl Executor for DockerExecutor {
             .create_container(
                 Some(CreateContainerOptions {
                     name,
-                    platform: None,
+                    platform: Some(self.config.docker.platform.clone()),
                 }),
                 Config {
                     image: Some(spec.image.clone()),
@@ -525,19 +596,6 @@ impl Executor for DockerExecutor {
         {
             journal.transition(&spec.id, spec.attempt, crate::state::State::Cancelled)?;
         }
-        let export_dir = (!spec.artifacts.is_empty())
-            .then(|| artifacts::destination(&self.config.work_dir, &spec.id, spec.attempt));
-        let files = match &export_dir {
-            Some(dir) => artifacts::export(
-                prepared.dir.path(),
-                &spec.artifacts,
-                dir,
-                self.config.limits.max_artifact_bytes,
-                self.config.limits.max_artifact_files,
-            )?
-            .unwrap_or_default(),
-            None => Vec::new(),
-        };
         let mut final_exit_code = status;
         let final_status = if status == 0 { "completed" } else { "failed" };
         let final_status = if final_status == "completed" {
@@ -552,6 +610,30 @@ impl Executor for DockerExecutor {
             }
         } else {
             final_status
+        };
+        let mut artifact_patterns = spec.artifacts.clone();
+        if final_status != "completed" {
+            write_failure_diagnostics(
+                prepared.dir.path(),
+                &spec,
+                Some("command"),
+                &stdout,
+                &stderr,
+            )?;
+            artifact_patterns.push(".runner/diagnostics/**".into());
+        }
+        let export_dir = (!artifact_patterns.is_empty())
+            .then(|| artifacts::destination(&self.config.work_dir, &spec.id, spec.attempt));
+        let files = match &export_dir {
+            Some(dir) => artifacts::export(
+                prepared.dir.path(),
+                &artifact_patterns,
+                dir,
+                self.config.limits.max_artifact_bytes,
+                self.config.limits.max_artifact_files,
+            )?
+            .unwrap_or_default(),
+            None => Vec::new(),
         };
         journal.transition(
             &spec.id,
@@ -591,6 +673,12 @@ impl Executor for DockerExecutor {
             log_truncated: truncated,
             stdout: String::from_utf8_lossy(&stdout).into_owned(),
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
+            error_summary: crate::job::error_summary(
+                final_status,
+                &String::from_utf8_lossy(&stdout),
+                &String::from_utf8_lossy(&stderr),
+            ),
+            failed_phase: (final_status != "completed").then(|| "command".into()),
             artifacts: files,
             artifact_dir: export_dir.map(|path| path.to_string_lossy().into_owned()),
             sandbox: SandboxResult {
@@ -746,7 +834,7 @@ impl DockerExecutor {
             .create_container(
                 Some(CreateContainerOptions::<String> {
                     name: format!("omniroute-job-{}", Uuid::new_v4()),
-                    platform: None,
+                    platform: Some(self.config.docker.platform.clone()),
                 }),
                 Config::<String> {
                     image: Some(spec.image.clone()),
@@ -781,26 +869,31 @@ impl DockerExecutor {
         let started = Instant::now();
         let mut final_status = "failed";
         let mut setup_ok = true;
+        let mut failed_phase: Option<String> = None;
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         for setup in &workflow.setup {
+            self.set_log_phase("setup");
             let (status, command_stdout, command_stderr) = self.exec_command(&id, setup).await?;
             stdout.extend_from_slice(&command_stdout);
             stderr.extend_from_slice(&command_stderr);
             if status != 0 {
                 setup_ok = false;
+                failed_phase = Some("setup".into());
             }
         }
         if !setup_ok {
             std::fs::write(&feedback, "Workflow setup command failed.\n")?;
         }
         if setup_ok && let Some(initialize) = &workflow.initialize {
+            self.set_log_phase("initialize");
             info!(job_id=%spec.id, "workflow agent context initialization started");
             let (status, output_stdout, output_stderr) = self.exec_command(&id, initialize).await?;
             stdout.extend_from_slice(&output_stdout);
             stderr.extend_from_slice(&output_stderr);
             if status != 0 {
                 setup_ok = false;
+                failed_phase = Some("initialize".into());
                 std::fs::write(
                     &feedback,
                     format!(
@@ -815,13 +908,18 @@ impl DockerExecutor {
                 break;
             }
             info!(job_id=%spec.id, iteration, "workflow agent started");
+            self.set_log_phase("agent");
             let (agent_status, agent_stdout, agent_stderr) =
                 self.exec_command(&id, &workflow.agent).await?;
             stdout.extend_from_slice(&agent_stdout);
             stderr.extend_from_slice(&agent_stderr);
             let mut all_passed = agent_status == 0;
+            if agent_status != 0 {
+                failed_phase = Some("agent".into());
+            }
             let mut report = format!("Iteration {iteration} agent exit code: {agent_status}\n");
             for verifier in &workflow.verifiers {
+                self.set_log_phase("verifier");
                 let command = CommandSpec {
                     command: verifier.command.clone(),
                     working_directory: verifier.working_directory.clone(),
@@ -838,9 +936,11 @@ impl DockerExecutor {
                 ));
                 if verifier.required && status != 0 {
                     all_passed = false;
+                    failed_phase = Some("verifier".into());
                 }
             }
             for verifier in &self.config.security.mandatory_verifiers {
+                self.set_log_phase("verifier");
                 let (status, output_stdout, output_stderr) =
                     self.exec_command(&id, verifier).await?;
                 stdout.extend_from_slice(&output_stdout);
@@ -853,14 +953,19 @@ impl DockerExecutor {
                 ));
                 if status != 0 {
                     all_passed = false;
+                    failed_phase = Some("verifier".into());
                 }
             }
             if all_passed && let Some(publish) = &workflow.publish {
+                self.set_log_phase("publish");
                 let (publish_status, publish_stdout, publish_stderr) =
                     self.exec_command(&id, publish).await?;
                 stdout.extend_from_slice(&publish_stdout);
                 stderr.extend_from_slice(&publish_stderr);
                 all_passed = publish_status == 0;
+                if publish_status != 0 {
+                    failed_phase = Some("publish".into());
+                }
             }
             if all_passed {
                 final_status = "completed";
@@ -873,12 +978,23 @@ impl DockerExecutor {
             info!(job_id=%spec.id, next_iteration=iteration + 1, "verifier feedback written");
         }
         journal.transition(&spec.id, spec.attempt, crate::state::State::Collecting)?;
-        let export_dir = (!spec.artifacts.is_empty())
+        let mut artifact_patterns = spec.artifacts.clone();
+        if final_status != "completed" {
+            write_failure_diagnostics(
+                prepared.dir.path(),
+                &spec,
+                failed_phase.as_deref(),
+                &stdout,
+                &stderr,
+            )?;
+            artifact_patterns.push(".runner/diagnostics/**".into());
+        }
+        let export_dir = (!artifact_patterns.is_empty())
             .then(|| artifacts::destination(&self.config.work_dir, &spec.id, spec.attempt));
         let files = match &export_dir {
             Some(dir) => artifacts::export(
                 prepared.dir.path(),
-                &spec.artifacts,
+                &artifact_patterns,
                 dir,
                 self.config.limits.max_artifact_bytes,
                 self.config.limits.max_artifact_files,
@@ -924,6 +1040,13 @@ impl DockerExecutor {
             log_truncated: false,
             stdout: String::from_utf8_lossy(&stdout).into_owned(),
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
+            error_summary: crate::job::error_summary(
+                final_status,
+                &String::from_utf8_lossy(&stdout),
+                &String::from_utf8_lossy(&stderr),
+            ),
+            failed_phase: (final_status != "completed")
+                .then(|| failed_phase.unwrap_or_else(|| "workflow".into())),
             artifacts: files,
             artifact_dir: export_dir.map(|path| path.to_string_lossy().into_owned()),
             sandbox: SandboxResult {

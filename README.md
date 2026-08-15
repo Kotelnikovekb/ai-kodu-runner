@@ -27,7 +27,7 @@ ai-codu-runer cleanup --config ./runner.toml
 ai-codu-runer version
 ```
 
-`doctor` pings Docker, reports host/API/capabilities, and creates/removes a disposable Alpine container. The daemon leases jobs from the HTTP control plane, sends Bearer-authenticated completion requests, and stops cleanly on Ctrl-C. The endpoint selection is delegated to Bollard's platform defaults, which honor Docker's normal local endpoint/`DOCKER_HOST` behavior on both platforms.
+`doctor` pings Docker, reports host/API/capabilities, and creates/removes a disposable Alpine container. The daemon leases jobs from the HTTP control plane, sends Bearer-authenticated completion requests, and stops cleanly on Ctrl-C. Docker container architecture is configured with `[docker].platform` and defaults to `linux/amd64`; `RUNNER_PLATFORM` overrides it for local or host-specific deployments. Values must use `os/architecture` format, optionally with a variant such as `linux/arm64/v8`.
 
 ## Architecture and safety
 

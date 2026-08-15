@@ -158,6 +158,10 @@ pub struct JobResult {
     pub log_truncated: bool,
     pub stdout: String,
     pub stderr: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed_phase: Option<String>,
     pub artifacts: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub artifact_dir: Option<String>,
@@ -170,7 +174,23 @@ pub struct LogChunk {
     pub sequence: u64,
     pub stream: String,
     pub phase: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
     pub message: String,
+}
+
+pub fn error_summary(status: &str, stdout: &str, stderr: &str) -> Option<String> {
+    if status == "completed" {
+        return None;
+    }
+    let source = if stderr.trim().is_empty() {
+        stdout
+    } else {
+        stderr
+    };
+    let line = source.lines().rev().find(|line| !line.trim().is_empty())?;
+    let summary = line.trim();
+    Some(summary.chars().take(500).collect())
 }
 
 impl JobResult {
@@ -187,6 +207,8 @@ impl JobResult {
             log_truncated: false,
             stdout: String::new(),
             stderr: error.to_string(),
+            error_summary: Some(error.to_string()),
+            failed_phase: None,
             artifacts: Vec::new(),
             artifact_dir: None,
             sandbox: SandboxResult {
@@ -195,6 +217,20 @@ impl JobResult {
                 image_id: None,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::error_summary;
+
+    #[test]
+    fn error_summary_prefers_stderr_and_truncates() {
+        assert_eq!(
+            error_summary("failed", "agent output", "first\nUnexpected server error\n"),
+            Some("Unexpected server error".into())
+        );
+        assert_eq!(error_summary("completed", "", ""), None);
     }
 }
 #[derive(Debug, Clone, Serialize)]

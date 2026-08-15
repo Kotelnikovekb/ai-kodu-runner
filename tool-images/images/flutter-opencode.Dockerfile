@@ -17,7 +17,8 @@ FROM ghcr.io/cirruslabs/android-sdk:${android_sdk_ver}
 ARG cmake_version=3.22.1
 ARG ndk_version=28.2.13676358
 ARG flutter_ver=3.41.6
-ARG image_revision=5
+ARG opencode_version=1.18.17
+ARG image_revision=6
 
 LABEL org.opencontainers.image.title="Flutter OpenCode" \
     org.opencontainers.image.description="Flutter and Android SDK tool image with OpenCode" \
@@ -93,10 +94,11 @@ RUN flutter config --no-analytics \
     && flutter --version \
     && dart --version
 
-RUN curl -fsSL https://opencode.ai/install | bash \
+RUN curl -fsSL https://opencode.ai/install \
+        | bash -s -- --version "${opencode_version}" --no-modify-path \
     && install -m 0755 "$(command -v opencode)" /usr/local/bin/opencode \
     && chown -R 10001:10001 /home/opencode \
-    && opencode --version
+    && test "$(opencode --version)" = "${opencode_version}"
 
 USER 10001:10001
 

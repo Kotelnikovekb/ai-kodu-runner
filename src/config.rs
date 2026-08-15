@@ -37,6 +37,8 @@ pub struct DockerConfig {
     #[allow(dead_code)]
     pub host: Option<String>,
     pub pull_policy: Option<String>,
+    #[serde(default = "default_platform")]
+    pub platform: String,
 }
 #[derive(Debug, Clone, Deserialize)]
 pub struct Limits {
@@ -53,6 +55,28 @@ pub struct Limits {
 fn default_max_artifact_files() -> usize {
     10_000
 }
+
+pub fn default_platform() -> String {
+    "linux/amd64".into()
+}
+
+pub fn platform_from_env() -> String {
+    env::var("RUNNER_PLATFORM").unwrap_or_else(|_| default_platform())
+}
+
+pub fn validate_platform(platform: &str) -> Result<()> {
+    let parts: Vec<_> = platform.split('/').collect();
+    if !(parts.len() == 2 || parts.len() == 3)
+        || parts
+            .iter()
+            .any(|part| part.is_empty() || part.chars().any(char::is_whitespace))
+    {
+        anyhow::bail!(
+            "invalid Docker platform {platform:?}; expected os/architecture or os/architecture/variant"
+        );
+    }
+    Ok(())
+}
 #[derive(Debug, Clone, Deserialize)]
 pub struct SecurityConfig {
     pub allow_network: bool,
@@ -67,10 +91,15 @@ pub struct SecurityConfig {
 
 impl RunnerConfig {
     pub fn load(path: &Path) -> Result<Self> {
-        toml::from_str(
+        let mut config: Self = toml::from_str(
             &fs::read_to_string(path).with_context(|| format!("read config {}", path.display()))?,
         )
-        .context("parse runner.toml")
+        .context("parse runner.toml")?;
+        if let Ok(platform) = env::var("RUNNER_PLATFORM") {
+            config.docker.platform = platform;
+        }
+        validate_platform(&config.docker.platform)?;
+        Ok(config)
     }
     pub fn default_local() -> Self {
         Self {
@@ -82,6 +111,7 @@ impl RunnerConfig {
             docker: DockerConfig {
                 host: Some("auto".into()),
                 pull_policy: Some("if-not-present".into()),
+                platform: platform_from_env(),
             },
             limits: Limits {
                 max_cpu: 4.0,
@@ -119,5 +149,28 @@ impl RunnerConfig {
                 )
             })
             .transpose()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{default_platform, validate_platform};
+
+    #[test]
+    fn defaults_to_linux_amd64() {
+        assert_eq!(default_platform(), "linux/amd64");
+    }
+
+    #[test]
+    fn accepts_platform_with_optional_variant() {
+        assert!(validate_platform("linux/amd64").is_ok());
+        assert!(validate_platform("linux/arm64/v8").is_ok());
+    }
+
+    #[test]
+    fn rejects_platform_without_architecture() {
+        assert!(validate_platform("linux").is_err());
+        assert!(validate_platform("linux/").is_err());
+        assert!(validate_platform("linux/arm 64").is_err());
     }
 }

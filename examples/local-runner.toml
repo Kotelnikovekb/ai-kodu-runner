@@ -19,6 +19,7 @@ name = "local"
 [docker]
 host = "auto"
 pull_policy = "if-not-present"
+platform = "linux/amd64"
 
 [limits]
 max_cpu = 4.0
