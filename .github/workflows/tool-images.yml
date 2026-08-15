@@ -58,6 +58,9 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+          install: true
 
       - name: Log in to Docker Hub
         if: github.event_name == 'push'
@@ -157,16 +160,3 @@ jobs:
           name: sbom-${{ matrix.image }}
           path: sbom-${{ matrix.image }}.json
           if-no-files-found: error
-
-      - name: Build and push image
-        if: github.event_name == 'push'
-        uses: docker/build-push-action@v6
-        with:
-          context: ./tool-images
-          file: ./tool-images/${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
