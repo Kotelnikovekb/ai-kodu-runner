@@ -40,6 +40,35 @@ use tokio::sync::mpsc::{Sender, error::TrySendError};
 use tracing::{info, warn};
 use uuid::Uuid;
 
+/// Writable, ephemeral runtime directories for images that use a read-only
+/// root filesystem. The uid/gid match the standard `opencode` user used by
+/// the bundled tool images.
+fn runtime_tmpfs() -> HashMap<String, String> {
+    HashMap::from([
+        ("/tmp".into(), "rw,noexec,nosuid,size=256m".into()),
+        (
+            "/home/opencode/.config".into(),
+            "rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=32m".into(),
+        ),
+        (
+            "/home/opencode/.local/share".into(),
+            "rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=128m".into(),
+        ),
+        (
+            "/home/opencode/.local/state".into(),
+            "rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=32m".into(),
+        ),
+        (
+            "/home/opencode/.cache".into(),
+            "rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=1g".into(),
+        ),
+        (
+            "/home/opencode/.pub-cache".into(),
+            "rw,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=1g".into(),
+        ),
+    ])
+}
+
 pub struct DockerExecutor {
     config: RunnerConfig,
     docker: Docker,
@@ -383,10 +412,7 @@ impl Executor for DockerExecutor {
             cap_drop: Some(vec!["ALL".into()]),
             security_opt: Some(vec!["no-new-privileges:true".into()]),
             readonly_rootfs: Some(!spec.writable_rootfs),
-            tmpfs: Some(HashMap::from([(
-                "/tmp".into(),
-                "rw,noexec,nosuid,size=256m".into(),
-            )])),
+            tmpfs: Some(runtime_tmpfs()),
             auto_remove: Some(false),
             ..Default::default()
         };
@@ -707,10 +733,7 @@ impl DockerExecutor {
             cap_drop: Some(vec!["ALL".into()]),
             security_opt: Some(vec!["no-new-privileges:true".into()]),
             readonly_rootfs: Some(!spec.writable_rootfs),
-            tmpfs: Some(HashMap::from([(
-                String::from("/tmp"),
-                String::from("rw,noexec,nosuid,size=256m"),
-            )])),
+            tmpfs: Some(runtime_tmpfs()),
             auto_remove: Some(false),
             ..Default::default()
         };

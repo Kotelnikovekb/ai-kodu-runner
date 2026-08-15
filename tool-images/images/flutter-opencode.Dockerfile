@@ -17,7 +17,7 @@ FROM ghcr.io/cirruslabs/android-sdk:${android_sdk_ver}
 ARG cmake_version=3.22.1
 ARG ndk_version=28.2.13676358
 ARG flutter_ver=3.41.6
-ARG image_revision=2
+ARG image_revision=3
 
 LABEL org.opencontainers.image.title="Flutter OpenCode" \
     org.opencontainers.image.description="Flutter and Android SDK tool image with OpenCode" \
@@ -40,6 +40,8 @@ ENV FLUTTER_HOME=/usr/local/flutter \
     PATH=/home/opencode/.opencode/bin:/usr/local/flutter/bin:/usr/local/flutter/bin/cache/dart-sdk/bin:${PATH}
 
 # hadolint ignore=DL3008
+# The runner mounts these directories as ephemeral tmpfs volumes when it uses
+# a read-only root filesystem. Keep the mount points in the image as well.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends --no-install-suggests \
         bash \
@@ -57,7 +59,8 @@ RUN apt-get update \
         xz-utils \
     && update-ca-certificates \
     && useradd --create-home --uid 10001 --user-group --shell /bin/bash opencode \
-    && mkdir -p /home/opencode/.config /home/opencode/.local/share \
+    && mkdir -p /home/opencode/.config/opencode \
+        /home/opencode/.local/share/opencode/log \
         /home/opencode/.local/state /home/opencode/.cache/npm \
         /home/opencode/.pub-cache /workspace \
     && chown -R opencode:opencode /home/opencode /workspace \

@@ -40,10 +40,12 @@ Workspace staging prunes generated directories named `.cache`, `.omniroute`,
 be recreated by setup commands or the toolchain inside the isolated job. This
 keeps dependency caches and OpenCode state out of source snapshots.
 
-The default root filesystem is read-only. A job may explicitly set
-`"writable_rootfs": true` when its image requires writes outside `/workspace`;
-this is needed by the sample Flutter image because Flutter updates its SDK cache
-and OpenCode writes its local log. Such a relaxation is visible in the JobSpec and
+The default root filesystem is read-only. The Docker executor automatically
+provides ephemeral writable tmpfs mounts for `/tmp` and the standard
+`/home/opencode` config, state, data, npm, and pub-cache directories. A job may
+still explicitly set `"writable_rootfs": true` when its image requires writes
+outside those paths, for example when Flutter updates its SDK cache under
+`/usr/local/flutter/bin/cache`. Such a relaxation is visible in the JobSpec and
 should only be allowed for trusted, pinned images.
 
 Tool images keep `HOME` and all XDG directories under `/home/opencode`, never
