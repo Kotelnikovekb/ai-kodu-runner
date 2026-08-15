@@ -17,7 +17,7 @@ FROM ghcr.io/cirruslabs/android-sdk:${android_sdk_ver}
 ARG cmake_version=3.22.1
 ARG ndk_version=28.2.13676358
 ARG flutter_ver=3.41.6
-ARG image_revision=3
+ARG image_revision=4
 
 LABEL org.opencontainers.image.title="Flutter OpenCode" \
     org.opencontainers.image.description="Flutter and Android SDK tool image with OpenCode" \
@@ -43,6 +43,7 @@ ENV FLUTTER_HOME=/usr/local/flutter \
 # The runner mounts these directories as ephemeral tmpfs volumes when it uses
 # a read-only root filesystem. Keep the mount points in the image as well.
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends --no-install-suggests \
         bash \
         build-essential \

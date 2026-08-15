@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-FROM aquasec/trivy:0.73.0 AS trivy
+FROM aquasec/trivy:0.74.0 AS trivy
 
 FROM node:22-bookworm
 
@@ -31,9 +31,11 @@ ENV HOME=/home/opencode \
     NEXT_TELEMETRY_DISABLED=1
 
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates curl git bash build-essential \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install --global opencode-ai \
+    && npm install --global opencode-ai@latest npm@latest \
+    && npm cache clean --force \
     && useradd --create-home --home-dir /home/opencode --shell /bin/bash opencode \
     && mkdir -p /home/opencode/.config /home/opencode/.local/share \
         /home/opencode/.local/state /home/opencode/.cache/npm /home/opencode/.cache/trivy /workspace \
