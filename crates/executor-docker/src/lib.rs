@@ -11,40 +11,67 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use super::Executor;
-use crate::{
-    artifacts,
-    config::{RunnerConfig, platform_from_env, validate_platform},
-    job::{CommandSpec, JobResult, JobSpec, LogChunk, SandboxResult, ServiceSpec, WorkflowSpec},
-    journal::Journal,
-    policy, workspace,
-};
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use bollard::container::{
-    Config, CreateContainerOptions, LogOutput, LogsOptions, NetworkingConfig,
-    RemoveContainerOptions, StartContainerOptions,
+    Config, CreateContainerOptions, ListContainersOptions, LogOutput, LogsOptions,
+    NetworkingConfig, RemoveContainerOptions, StartContainerOptions, StopContainerOptions,
 };
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::image::CreateImageOptions;
 use bollard::models::{EndpointSettings, HealthConfig, HostConfig};
-use bollard::network::CreateNetworkOptions;
+use bollard::network::{CreateNetworkOptions, ListNetworksOptions};
 use bollard::{API_DEFAULT_VERSION, Docker};
 use futures_util::StreamExt;
+use runner_core::executor::{DoctorCheck, DoctorReport, Executor, ExecutorCapabilities};
+use runner_core::{
+    artifacts,
+    config::{RunnerConfig, platform_from_env, validate_platform},
+    journal::Journal,
+    policy, state, workspace,
+};
+use runner_protocol::{
+    CommandSpec, FailureInfo, FailureKind, JobResult, JobSpec, LogChunk, SandboxResult,
+    ServiceSpec, WorkflowSpec, validate_feedback_file,
+};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     collections::HashMap,
     fs,
-    path::Path,
+    path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
     time::Instant,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutionTermination {
+    Cancelled,
+    TimedOut,
+}
+
+#[derive(Debug)]
+struct ExecResult {
+    status: i64,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    truncated: bool,
+    termination: Option<ExecutionTermination>,
+}
+
+fn append_bounded(buffer: &mut Vec<u8>, data: &[u8], limit: u64) -> bool {
+    let remaining = limit.saturating_sub(buffer.len() as u64) as usize;
+    let amount = data.len().min(remaining);
+    buffer.extend_from_slice(&data[..amount]);
+    amount < data.len()
+}
 
 fn redact_diagnostic_value(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(object) => {
             for (key, value) in object {
                 let normalized = key.to_ascii_lowercase();
-                if normalized == "secrets" {
+                if normalized == "command" {
+                    *value = serde_json::json!(["<redacted: command may contain credentials>"]);
+                } else if normalized == "secrets" {
                     if let serde_json::Value::Array(secrets) = value {
                         for secret in secrets.iter_mut() {
                             if let Some(value) = secret.get_mut("value") {
@@ -53,10 +80,14 @@ fn redact_diagnostic_value(value: &mut serde_json::Value) {
                         }
                     }
                     redact_diagnostic_value(value);
-                } else if matches!(
-                    normalized.as_str(),
-                    "token" | "password" | "secret" | "apikey" | "api_key" | "authorization"
-                ) {
+                } else if normalized.contains("token")
+                    || normalized.contains("password")
+                    || normalized.contains("secret")
+                    || normalized.contains("authorization")
+                    || normalized.ends_with("apikey")
+                    || normalized.ends_with("api_key")
+                    || normalized.ends_with("_key")
+                {
                     *value = serde_json::Value::String("<redacted>".into());
                 } else {
                     redact_diagnostic_value(value);
@@ -72,6 +103,34 @@ fn redact_diagnostic_value(value: &mut serde_json::Value) {
     }
 }
 
+fn redact_diagnostic_bytes(spec: &JobSpec, bytes: &[u8]) -> Vec<u8> {
+    const MAX_DIAGNOSTIC_BYTES: usize = 64 * 1024;
+    let mut text = String::from_utf8_lossy(bytes).into_owned();
+    let mut secrets: Vec<String> = Vec::new();
+    if let runner_protocol::WorkspaceSpec::Git { token, .. } = &spec.workspace {
+        secrets.push(token.clone());
+    }
+    for secret in &spec.secrets {
+        secrets.push(secret.value.clone());
+    }
+    for name in &spec.environment_from_runner {
+        if let Ok(value) = std::env::var(name) {
+            secrets.push(value);
+        }
+    }
+    for secret in secrets {
+        if !secret.is_empty() {
+            text = text.replace(&secret, "<redacted>");
+        }
+    }
+    let mut output = text.into_bytes();
+    if output.len() > MAX_DIAGNOSTIC_BYTES {
+        output.truncate(MAX_DIAGNOSTIC_BYTES);
+        output.extend_from_slice(b"\n[diagnostic output truncated]\n");
+    }
+    output
+}
+
 fn write_failure_diagnostics(
     workspace: &Path,
     spec: &JobSpec,
@@ -83,9 +142,6 @@ fn write_failure_diagnostics(
     fs::create_dir_all(&dir)?;
     let mut job = serde_json::to_value(spec)?;
     redact_diagnostic_value(&mut job);
-    if let Some(command) = job.get_mut("command") {
-        *command = serde_json::json!(["<redacted: command may contain credentials>"]);
-    }
     fs::write(dir.join("job.json"), serde_json::to_vec_pretty(&job)?)?;
     fs::write(
         dir.join("meta.json"),
@@ -97,18 +153,17 @@ fn write_failure_diagnostics(
             "phase": phase,
         }))?,
     )?;
-    fs::write(dir.join("stdout.jsonl"), stdout)?;
-    fs::write(dir.join("stderr.log"), stderr)?;
-    for (source, target) in [
-        ("prompt.md", "prompt.md"),
-        ("AGENTS.md", "AGENTS.md"),
-        (".runner/feedback.md", "feedback.md"),
-    ] {
-        let source = workspace.join(source);
-        if source.is_file() {
-            fs::copy(source, dir.join(target))?;
-        }
-    }
+    // Command output and agent context may contain credentials or source code.
+    // Keep only bounded, value-redacted diagnostics; never copy prompt/AGENTS/
+    // feedback files into exported artifacts.
+    fs::write(
+        dir.join("stdout.log"),
+        redact_diagnostic_bytes(spec, stdout),
+    )?;
+    fs::write(
+        dir.join("stderr.log"),
+        redact_diagnostic_bytes(spec, stderr),
+    )?;
     Ok(())
 }
 use tokio::sync::mpsc::{Sender, error::TrySendError};
@@ -198,6 +253,49 @@ fn headless_opencode_environment(mut env: Vec<String>, command: &[String]) -> Ve
     env.push(r#"OPENCODE_CONFIG_CONTENT={"agent":{"title":{"disable":true}}}"#.into());
     env.push("OPENCODE_DISABLE_MODELS_FETCH=true".into());
     env
+}
+
+fn safe_feedback_path(root: &Path, feedback_file: &str) -> Result<PathBuf> {
+    let relative = validate_feedback_file(feedback_file)?;
+    let root = root
+        .canonicalize()
+        .context("canonicalize feedback workspace")?;
+    let mut current = root.clone();
+    if let Some(parent) = relative.parent() {
+        for component in parent
+            .components()
+            .filter(|component| !matches!(component, Component::CurDir))
+        {
+            current.push(component.as_os_str());
+            match fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    bail!("feedback_file parent must not be a symlink")
+                }
+                Ok(metadata) if !metadata.is_dir() => {
+                    bail!("feedback_file parent is not a directory")
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    fs::create_dir(&current)?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    let target = root.join(&relative);
+    if let Ok(metadata) = fs::symlink_metadata(&target)
+        && metadata.file_type().is_symlink()
+    {
+        bail!("feedback_file must not be a symlink")
+    }
+    let parent = target
+        .parent()
+        .context("feedback_file has no parent directory")?
+        .canonicalize()?;
+    if !parent.starts_with(&root) {
+        bail!("feedback_file escapes workspace")
+    }
+    Ok(target)
 }
 
 pub struct DockerExecutor {
@@ -313,7 +411,18 @@ impl DockerExecutor {
         );
         Ok(())
     }
-    async fn pull(&self, image: &str) -> Result<()> {
+    async fn pull(
+        &self,
+        image: &str,
+        cancellation: &tokio_util::sync::CancellationToken,
+        deadline: tokio::time::Instant,
+    ) -> Result<Option<ExecutionTermination>> {
+        if cancellation.is_cancelled() {
+            return Ok(Some(ExecutionTermination::Cancelled));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(Some(ExecutionTermination::TimedOut));
+        }
         if self.config.docker.pull_policy.as_deref() == Some("always") {
             let mut s = self.docker.create_image(
                 Some(CreateImageOptions {
@@ -324,9 +433,23 @@ impl DockerExecutor {
                 None,
                 None,
             );
-            while s.next().await.is_some() {}
+            loop {
+                let item = tokio::select! {
+                    _ = cancellation.cancelled() => {
+                        return Ok(Some(ExecutionTermination::Cancelled));
+                    }
+                    _ = tokio::time::sleep_until(deadline) => {
+                        return Ok(Some(ExecutionTermination::TimedOut));
+                    }
+                    item = s.next() => item,
+                };
+                let Some(item) = item else {
+                    break;
+                };
+                item?;
+            }
         }
-        Ok(())
+        Ok(None)
     }
 
     async fn start_services(
@@ -334,7 +457,9 @@ impl DockerExecutor {
         services: &[ServiceSpec],
         network_name: &str,
         job_id: &str,
-        resources: &crate::job::Resources,
+        resources: &runner_protocol::Resources,
+        cancellation: &tokio_util::sync::CancellationToken,
+        deadline: tokio::time::Instant,
     ) -> Result<Vec<String>> {
         let mut ids = Vec::new();
         for service in services {
@@ -347,7 +472,18 @@ impl DockerExecutor {
             if service.image.trim().is_empty() || service.image.contains(char::is_whitespace) {
                 return Err(anyhow!("invalid service image for {}", service.name));
             }
-            if let Err(error) = self.pull(&service.image).await {
+            if let Err(error) = self
+                .pull(&service.image, cancellation, deadline)
+                .await
+                .and_then(|termination| {
+                    termination.map_or(Ok(()), |reason| {
+                        Err(anyhow!(match reason {
+                            ExecutionTermination::Cancelled => "execution cancelled",
+                            ExecutionTermination::TimedOut => "execution timed out",
+                        }))
+                    })
+                })
+            {
                 self.remove_containers(&ids).await;
                 return Err(error);
             }
@@ -434,22 +570,34 @@ impl DockerExecutor {
         }
         for (service, id) in services.iter().zip(&ids) {
             if let Some(healthcheck) = &service.healthcheck {
-                let deadline = tokio::time::Instant::now()
+                let health_deadline = tokio::time::Instant::now()
                     + std::time::Duration::from_secs(healthcheck.timeout_seconds);
                 loop {
-                    let (status, output_stdout, output_stderr) = self
+                    let result = self
                         .exec_command(
                             id,
                             &CommandSpec {
                                 command: healthcheck.command.clone(),
                                 working_directory: None,
                             },
+                            cancellation,
+                            deadline.min(health_deadline),
                         )
                         .await?;
+                    if let Some(termination) = result.termination {
+                        self.remove_containers(&ids).await;
+                        return Err(anyhow!(match termination {
+                            ExecutionTermination::Cancelled => "execution cancelled",
+                            ExecutionTermination::TimedOut => "execution timed out",
+                        }));
+                    }
+                    let status = result.status;
+                    let output_stdout = result.stdout;
+                    let output_stderr = result.stderr;
                     if status == 0 {
                         break;
                     }
-                    if tokio::time::Instant::now() >= deadline {
+                    if tokio::time::Instant::now() >= health_deadline {
                         self.remove_containers(&ids).await;
                         return Err(anyhow!(
                             "service {} did not become healthy: stdout: {}\nstderr: {}",
@@ -486,11 +634,13 @@ impl DockerExecutor {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{
-        command_with_opencode_retry, headless_opencode_environment, redact_diagnostic_value,
-        runtime_tmpfs,
+        command_with_opencode_retry, headless_opencode_environment, redact_diagnostic_bytes,
+        redact_diagnostic_value, runtime_tmpfs, safe_feedback_path,
     };
+    use runner_protocol::JobSpec;
 
     #[test]
     fn runtime_tmpfs_includes_writable_opencode_cache() {
@@ -583,7 +733,8 @@ mod tests {
         let mut value = serde_json::json!({
             "workspace": { "token": "git-token", "username": "bot" },
             "provider": { "apiKey": "api-key" },
-            "secrets": [{ "name": "MODEL_KEY", "value": "secret-value" }]
+            "secrets": [{ "name": "MODEL_KEY", "value": "secret-value" }],
+            "workflow": { "agent": { "command": ["curl", "--header", "secret-value"] } }
         });
 
         redact_diagnostic_value(&mut value);
@@ -591,16 +742,129 @@ mod tests {
         assert_eq!(value["workspace"]["token"], "<redacted>");
         assert_eq!(value["provider"]["apiKey"], "<redacted>");
         assert_eq!(value["secrets"][0]["value"], "<redacted>");
+        assert_eq!(
+            value["workflow"]["agent"]["command"][0],
+            "<redacted: command may contain credentials>"
+        );
         assert_eq!(value["workspace"]["username"], "bot");
     }
+
+    #[test]
+    fn diagnostic_output_redacts_known_secrets_and_is_bounded() {
+        let spec = JobSpec::from_json(
+            r#"{
+                "api_version":"omniroute.dev/v1alpha1","id":"diag","attempt":0,
+                "executor":"docker","image":"example@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "command":["true"],"working_directory":"/workspace",
+                "workspace":{"kind":"local","path":"."},
+                "resources":{"cpu":1.0,"memory_mb":128,"pids":32,"timeout_seconds":60},
+                "network":{"mode":"none"},
+                "secrets":[{"name":"MODEL_KEY","value":"super-secret"}]
+            }"#,
+        )
+        .unwrap();
+        let output = redact_diagnostic_bytes(&spec, b"before super-secret after");
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "before <redacted> after"
+        );
+        let output = redact_diagnostic_bytes(&spec, &vec![b'x'; 70 * 1024]);
+        assert!(output.len() < 70 * 1024);
+        assert!(String::from_utf8_lossy(&output).contains("diagnostic output truncated"));
+    }
+
+    #[test]
+    fn feedback_path_is_contained_and_creates_safe_parent() {
+        let root = tempfile::tempdir().unwrap();
+        let feedback = safe_feedback_path(root.path(), "/workspace/.runner/feedback.md").unwrap();
+
+        assert_eq!(
+            feedback,
+            root.path()
+                .canonicalize()
+                .unwrap()
+                .join(".runner/feedback.md")
+        );
+        assert!(root.path().join(".runner").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn feedback_path_rejects_symlink_parent() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join(".runner")).unwrap();
+
+        assert!(safe_feedback_path(root.path(), "/workspace/.runner/feedback.md").is_err());
+    }
 }
+
 #[async_trait::async_trait]
 impl Executor for DockerExecutor {
+    fn capabilities(&self) -> ExecutorCapabilities {
+        ExecutorCapabilities::new(["artifacts", "cancellation", "network", "streaming_logs"])
+    }
+
+    async fn doctor(&self) -> Result<DoctorReport> {
+        self.docker.ping().await.context("Docker ping")?;
+        let version = self.docker.version().await?;
+        let test_name = format!("omniroute-doctor-{}", Uuid::new_v4());
+        let test_id = self
+            .docker
+            .create_container(
+                Some(CreateContainerOptions::<String> {
+                    name: test_name,
+                    platform: Some(self.config.docker.platform.clone()),
+                }),
+                Config::<String> {
+                    image: Some("alpine:3.20".into()),
+                    cmd: Some(vec!["true".into()]),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .id;
+        self.docker
+            .remove_container(
+                &test_id,
+                Some(RemoveContainerOptions {
+                    force: true,
+                    ..Default::default()
+                }),
+            )
+            .await?;
+        Ok(DoctorReport {
+            executor: "docker".into(),
+            healthy: true,
+            capabilities: self.capabilities(),
+            checks: vec![
+                DoctorCheck {
+                    name: "docker_ping".into(),
+                    healthy: true,
+                    message: "Docker Engine responded to ping".into(),
+                },
+                DoctorCheck {
+                    name: "docker_version".into(),
+                    healthy: true,
+                    message: version
+                        .version
+                        .unwrap_or_else(|| "Docker version unavailable".into()),
+                },
+                DoctorCheck {
+                    name: "test_container".into(),
+                    healthy: true,
+                    message: "Docker can create and remove a test container".into(),
+                },
+            ],
+        })
+    }
+
     async fn run(
         &self,
         spec: JobSpec,
         cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<JobResult> {
+        let cancellation = cancel.unwrap_or_default();
         self.begin_log_stream(&spec);
         self.set_log_phase(if spec.workflow.is_some() {
             "prepare"
@@ -615,14 +879,24 @@ impl Executor for DockerExecutor {
             "job execution started"
         );
         let resources = policy::validate(&spec, &self.config, false)?;
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(resources.timeout_seconds);
         if let Some(workflow) = spec.workflow.clone() {
-            return self.run_workflow(spec, workflow, resources).await;
+            return self
+                .run_workflow(spec, workflow, resources, cancellation, deadline)
+                .await;
         }
         let journal = Journal::open(&self.config.work_dir.join("runner.db"))?;
-        journal.transition(&spec.id, spec.attempt, crate::state::State::Received)?;
-        journal.transition(&spec.id, spec.attempt, crate::state::State::Preparing)?;
-        let prepared = workspace::prepare(&spec.workspace, &self.config).await?;
-        self.pull(&spec.image).await?;
+        journal.transition(&spec.id, spec.attempt, state::State::Received)?;
+        journal.transition(&spec.id, spec.attempt, state::State::Preparing)?;
+        let prepared =
+            workspace::prepare(&spec.workspace, &self.config, &cancellation, deadline).await?;
+        if let Some(termination) = self.pull(&spec.image, &cancellation, deadline).await? {
+            return Err(anyhow!(match termination {
+                ExecutionTermination::Cancelled => "execution cancelled",
+                ExecutionTermination::TimedOut => "execution timed out",
+            }));
+        }
         let network_name = format!("omniroute-net-{}", Uuid::new_v4());
         let network = if spec.network.mode == "bridge" {
             Some(
@@ -682,7 +956,7 @@ impl Executor for DockerExecutor {
             auto_remove: Some(false),
             ..Default::default()
         };
-        let id = self
+        let id = match self
             .docker
             .create_container(
                 Some(CreateContainerOptions {
@@ -701,13 +975,38 @@ impl Executor for DockerExecutor {
                     ..Default::default()
                 },
             )
-            .await?
-            .id;
-        journal.transition(&spec.id, spec.attempt, crate::state::State::Running)?;
+            .await
+        {
+            Ok(container) => container.id,
+            Err(error) => {
+                if let Some(network) = &network {
+                    let _ = self.docker.remove_network(network).await;
+                }
+                return Err(error.into());
+            }
+        };
+        journal.transition(&spec.id, spec.attempt, state::State::Running)?;
         let started = Instant::now();
-        self.docker
+        if let Err(error) = self
+            .docker
             .start_container(&id, None::<StartContainerOptions<String>>)
-            .await?;
+            .await
+        {
+            let _ = self
+                .docker
+                .remove_container(
+                    &id,
+                    Some(RemoveContainerOptions {
+                        force: true,
+                        ..Default::default()
+                    }),
+                )
+                .await;
+            if let Some(network) = &network {
+                let _ = self.docker.remove_network(network).await;
+            }
+            return Err(error.into());
+        }
         let mut logs = self.docker.logs(
             &id,
             Some(LogsOptions::<String> {
@@ -724,7 +1023,37 @@ impl Executor for DockerExecutor {
         let mut truncated = false;
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        while let Some(item) = logs.next().await {
+        let mut cancellation_requested = false;
+        let mut timeout_requested = false;
+        loop {
+            let item = tokio::select! {
+                _ = cancellation.cancelled() => {
+                    cancellation_requested = true;
+                    let _ = self
+                        .docker
+                        .stop_container(
+                            &id,
+                            Some(StopContainerOptions { t: 5 }),
+                        )
+                        .await;
+                    break;
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    timeout_requested = true;
+                    let _ = self
+                        .docker
+                        .stop_container(
+                            &id,
+                            Some(StopContainerOptions { t: 5 }),
+                        )
+                        .await;
+                    break;
+                }
+                item = logs.next() => item,
+            };
+            let Some(item) = item else {
+                break;
+            };
             match item? {
                 LogOutput::StdOut { message } => {
                     if log_bytes < self.config.limits.max_log_bytes {
@@ -781,16 +1110,29 @@ impl Executor for DockerExecutor {
                 return Err(anyhow!("Docker container inspect failed for {id}: {e}"));
             }
         };
-        journal.transition(&spec.id, spec.attempt, crate::state::State::Collecting)?;
-        if let Some(token) = cancel
-            && token.is_cancelled()
-        {
-            journal.transition(&spec.id, spec.attempt, crate::state::State::Cancelled)?;
-        }
+        journal.transition(&spec.id, spec.attempt, state::State::Collecting)?;
+        let cancelled = cancellation_requested || cancellation.is_cancelled();
+        let timed_out =
+            !cancelled && (timeout_requested || tokio::time::Instant::now() >= deadline);
         let mut final_exit_code = status;
-        let final_status = if status == 0 { "completed" } else { "failed" };
+        let final_status = if cancelled {
+            "cancelled"
+        } else if timed_out {
+            "timed_out"
+        } else if status == 0 {
+            "completed"
+        } else {
+            "failed"
+        };
         let final_status = if final_status == "completed" {
-            match crate::workspace::publish_git(&spec.workspace, prepared.dir.path()) {
+            match workspace::publish_git(
+                &spec.workspace,
+                prepared.dir.path(),
+                &cancellation,
+                deadline,
+            )
+            .await
+            {
                 Ok(()) => final_status,
                 Err(error) => {
                     warn!(job_id=%spec.id, error=%error, "git publish failed");
@@ -826,12 +1168,8 @@ impl Executor for DockerExecutor {
             .unwrap_or_default(),
             None => Vec::new(),
         };
-        journal.transition(
-            &spec.id,
-            spec.attempt,
-            crate::state::State::from_str(final_status),
-        )?;
-        journal.transition(&spec.id, spec.attempt, crate::state::State::Destroying)?;
+        journal.transition(&spec.id, spec.attempt, state::State::from_str(final_status))?;
+        journal.transition(&spec.id, spec.attempt, state::State::Destroying)?;
         let image_id = self
             .docker
             .inspect_container(&id, None)
@@ -851,24 +1189,45 @@ impl Executor for DockerExecutor {
         if let Some(n) = network {
             let _ = self.docker.remove_network(&n).await;
         }
-        journal.transition(&spec.id, spec.attempt, crate::state::State::Destroyed)?;
+        journal.transition(&spec.id, spec.attempt, state::State::Destroyed)?;
         info!(job_id=%spec.id, status=%final_status, exit_code=final_exit_code,"job finished");
         Ok(JobResult {
             job_id: spec.id,
             attempt: spec.attempt,
             status: final_status.into(),
-            exit_code: Some(final_exit_code),
+            exit_code: (!cancelled && !timed_out).then_some(final_exit_code),
             started_at: chrono::Utc::now().to_rfc3339(),
             finished_at: chrono::Utc::now().to_rfc3339(),
             duration_ms: started.elapsed().as_millis(),
-            log_truncated: truncated,
+            log_truncated: truncated || self.dropped_log_chunks.load(Ordering::Relaxed) > 0,
             stdout: String::from_utf8_lossy(&stdout).into_owned(),
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
-            error_summary: crate::job::error_summary(
+            error_summary: runner_protocol::error_summary(
                 final_status,
                 &String::from_utf8_lossy(&stdout),
                 &String::from_utf8_lossy(&stderr),
             ),
+            failure: (final_status != "completed").then(|| FailureInfo {
+                kind: if final_status == "cancelled" {
+                    FailureKind::Cancellation
+                } else if final_status == "timed_out" {
+                    FailureKind::Timeout
+                } else {
+                    FailureKind::Execution
+                },
+                code: match final_status {
+                    "cancelled" => "cancelled",
+                    "timed_out" => "timeout",
+                    _ => "command_failed",
+                }
+                .into(),
+                message: match final_status {
+                    "cancelled" => "execution cancelled",
+                    "timed_out" => "execution timed out",
+                    _ => "Docker command failed",
+                }
+                .into(),
+            }),
             failed_phase: (final_status != "completed").then(|| "command".into()),
             artifacts: files,
             artifact_dir: export_dir.map(|path| path.to_string_lossy().into_owned()),
@@ -879,6 +1238,85 @@ impl Executor for DockerExecutor {
             },
         })
     }
+    async fn cleanup(&self) -> Result<()> {
+        let filters = HashMap::from([(
+            "label".to_string(),
+            vec![
+                "omniroute.managed=true".to_string(),
+                format!("omniroute.runner_id={}", self.config.runner_id()),
+            ],
+        )]);
+        let items = self
+            .docker
+            .list_containers(Some(ListContainersOptions {
+                all: true,
+                filters,
+                ..Default::default()
+            }))
+            .await?;
+        let mut cleanup_error = None;
+        let mut active_resources = false;
+        for container in items {
+            if container.state.as_deref() == Some("running") {
+                // Manual cleanup must not interrupt a currently leased job.
+                active_resources = true;
+                continue;
+            }
+            if let Some(id) = container.id
+                && let Err(error) = self
+                    .docker
+                    .remove_container(
+                        &id,
+                        Some(RemoveContainerOptions {
+                            force: true,
+                            ..Default::default()
+                        }),
+                    )
+                    .await
+            {
+                cleanup_error.get_or_insert(error.to_string());
+            }
+        }
+        let network_filters = HashMap::from([(
+            "label".to_string(),
+            vec![
+                "omniroute.managed=true".to_string(),
+                format!("omniroute.runner_id={}", self.config.runner_id()),
+            ],
+        )]);
+        let networks = self
+            .docker
+            .list_networks(Some(ListNetworksOptions {
+                filters: network_filters,
+            }))
+            .await?;
+        for network in networks {
+            if network
+                .containers
+                .as_ref()
+                .is_some_and(|containers| !containers.is_empty())
+            {
+                active_resources = true;
+                continue;
+            }
+            if let Some(id) = network.id
+                && let Err(error) = self.docker.remove_network(&id).await
+            {
+                cleanup_error.get_or_insert(error.to_string());
+            }
+        }
+        let journal = Journal::open(&self.config.work_dir.join("runner.db"))?;
+        if let Some(error) = cleanup_error {
+            bail!("cleanup incomplete: {error}")
+        }
+        if !active_resources {
+            for (id, attempt) in journal.unfinished()? {
+                journal.transition(&id, attempt, state::State::Destroying)?;
+                journal.transition(&id, attempt, state::State::Destroyed)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl DockerExecutor {
@@ -886,10 +1324,31 @@ impl DockerExecutor {
         &self,
         container_id: &str,
         command: &CommandSpec,
-    ) -> Result<(i64, Vec<u8>, Vec<u8>)> {
-        let exec = self
-            .docker
-            .create_exec(
+        cancellation: &tokio_util::sync::CancellationToken,
+        deadline: tokio::time::Instant,
+    ) -> Result<ExecResult> {
+        let exec = tokio::select! {
+            _ = cancellation.cancelled() => {
+                let _ = self.stop_container(container_id).await;
+                return Ok(ExecResult {
+                    status: -1,
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                    truncated: false,
+                    termination: Some(ExecutionTermination::Cancelled),
+                });
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                let _ = self.stop_container(container_id).await;
+                return Ok(ExecResult {
+                    status: -1,
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                    truncated: false,
+                    termination: Some(ExecutionTermination::TimedOut),
+                });
+            }
+            result = self.docker.create_exec(
                 container_id,
                 CreateExecOptions::<String> {
                     attach_stdout: Some(true),
@@ -898,39 +1357,85 @@ impl DockerExecutor {
                     working_dir: command.working_directory.clone(),
                     ..Default::default()
                 },
-            )
-            .await?;
+            ) => result?,
+        };
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        match self
-            .docker
-            .start_exec(
+        let mut truncated = false;
+        let start = tokio::select! {
+            _ = cancellation.cancelled() => {
+                let _ = self.stop_container(container_id).await;
+                return Ok(ExecResult {
+                    status: -1,
+                    stdout,
+                    stderr,
+                    truncated,
+                    termination: Some(ExecutionTermination::Cancelled),
+                });
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                let _ = self.stop_container(container_id).await;
+                return Ok(ExecResult {
+                    status: -1,
+                    stdout,
+                    stderr,
+                    truncated,
+                    termination: Some(ExecutionTermination::TimedOut),
+                });
+            }
+            result = self.docker.start_exec(
                 &exec.id,
                 Some(StartExecOptions {
                     detach: false,
                     tty: false,
                     output_capacity: None,
                 }),
-            )
-            .await?
-        {
-            StartExecResults::Attached { mut output, .. } => {
-                while let Some(item) = output.next().await {
-                    match item? {
-                        LogOutput::StdOut { message } => {
-                            print!("{}", String::from_utf8_lossy(&message));
-                            self.emit_log("stdout", &message);
-                            stdout.extend_from_slice(&message);
-                        }
-                        LogOutput::StdErr { message } => {
-                            eprint!("{}", String::from_utf8_lossy(&message));
-                            self.emit_log("stderr", &message);
-                            stderr.extend_from_slice(&message);
-                        }
-                        _ => {}
+            ) => result?,
+        };
+        match start {
+            StartExecResults::Attached { mut output, .. } => loop {
+                let item = tokio::select! {
+                    _ = cancellation.cancelled() => {
+                        let _ = self.stop_container(container_id).await;
+                        return Ok(ExecResult {
+                            status: -1,
+                            stdout,
+                            stderr,
+                            truncated,
+                            termination: Some(ExecutionTermination::Cancelled),
+                        });
                     }
+                    _ = tokio::time::sleep_until(deadline) => {
+                        let _ = self.stop_container(container_id).await;
+                        return Ok(ExecResult {
+                            status: -1,
+                            stdout,
+                            stderr,
+                            truncated,
+                            termination: Some(ExecutionTermination::TimedOut),
+                        });
+                    }
+                    item = output.next() => item,
+                };
+                let Some(item) = item else {
+                    break;
+                };
+                match item? {
+                    LogOutput::StdOut { message } => {
+                        print!("{}", String::from_utf8_lossy(&message));
+                        self.emit_log("stdout", &message);
+                        truncated |=
+                            append_bounded(&mut stdout, &message, self.config.limits.max_log_bytes);
+                    }
+                    LogOutput::StdErr { message } => {
+                        eprint!("{}", String::from_utf8_lossy(&message));
+                        self.emit_log("stderr", &message);
+                        truncated |=
+                            append_bounded(&mut stderr, &message, self.config.limits.max_log_bytes);
+                    }
+                    _ => {}
                 }
-            }
+            },
             StartExecResults::Detached => {
                 return Err(anyhow!("workflow exec unexpectedly detached"));
             }
@@ -941,20 +1446,41 @@ impl DockerExecutor {
             .await?
             .exit_code
             .unwrap_or(-1);
-        Ok((status, stdout, stderr))
+        Ok(ExecResult {
+            status,
+            stdout,
+            stderr,
+            truncated,
+            termination: None,
+        })
+    }
+
+    async fn stop_container(&self, id: &str) -> Result<()> {
+        self.docker
+            .stop_container(id, Some(StopContainerOptions { t: 5 }))
+            .await?;
+        Ok(())
     }
 
     async fn run_workflow(
         &self,
         spec: JobSpec,
         workflow: WorkflowSpec,
-        resources: crate::job::Resources,
+        resources: runner_protocol::Resources,
+        cancellation: tokio_util::sync::CancellationToken,
+        deadline: tokio::time::Instant,
     ) -> Result<JobResult> {
         let journal = Journal::open(&self.config.work_dir.join("runner.db"))?;
-        journal.transition(&spec.id, spec.attempt, crate::state::State::Received)?;
-        journal.transition(&spec.id, spec.attempt, crate::state::State::Preparing)?;
-        let prepared = workspace::prepare(&spec.workspace, &self.config).await?;
-        self.pull(&spec.image).await?;
+        journal.transition(&spec.id, spec.attempt, state::State::Received)?;
+        journal.transition(&spec.id, spec.attempt, state::State::Preparing)?;
+        let prepared =
+            workspace::prepare(&spec.workspace, &self.config, &cancellation, deadline).await?;
+        if let Some(termination) = self.pull(&spec.image, &cancellation, deadline).await? {
+            return Err(anyhow!(match termination {
+                ExecutionTermination::Cancelled => "execution cancelled",
+                ExecutionTermination::TimedOut => "execution timed out",
+            }));
+        }
         let network_name = format!("omniroute-net-{}", Uuid::new_v4());
         let network = if spec.network.mode == "bridge" {
             Some(
@@ -981,7 +1507,14 @@ impl DockerExecutor {
         let env = policy::environment_for_job(&spec, &self.config)?;
         let service_ids = if let Some(network_name) = network.as_deref() {
             match self
-                .start_services(&workflow.services, network_name, &spec.id, &resources)
+                .start_services(
+                    &workflow.services,
+                    network_name,
+                    &spec.id,
+                    &resources,
+                    &cancellation,
+                    deadline,
+                )
                 .await
             {
                 Ok(ids) => ids,
@@ -1020,7 +1553,7 @@ impl DockerExecutor {
             auto_remove: Some(false),
             ..Default::default()
         };
-        let id = self
+        let id = match self
             .docker
             .create_container(
                 Some(CreateContainerOptions::<String> {
@@ -1041,124 +1574,242 @@ impl DockerExecutor {
                     ..Default::default()
                 },
             )
-            .await?
-            .id;
-        self.docker
+            .await
+        {
+            Ok(container) => container.id,
+            Err(error) => {
+                self.remove_containers(&service_ids).await;
+                if let Some(network) = &network {
+                    let _ = self.docker.remove_network(network).await;
+                }
+                return Err(error.into());
+            }
+        };
+        if let Err(error) = self
+            .docker
             .start_container(&id, None::<StartContainerOptions<String>>)
-            .await?;
-        let feedback = prepared.dir.path().join(
-            workflow
-                .feedback_file
-                .trim_start_matches("/workspace/")
-                .trim_start_matches('/'),
-        );
-        if let Some(parent) = feedback.parent() {
-            std::fs::create_dir_all(parent)?;
+            .await
+        {
+            let _ = self.remove_container(&id).await;
+            self.remove_containers(&service_ids).await;
+            if let Some(network) = &network {
+                let _ = self.docker.remove_network(network).await;
+            }
+            return Err(error.into());
         }
+        let feedback = safe_feedback_path(prepared.dir.path(), &workflow.feedback_file)?;
         std::fs::write(&feedback, "No verifier feedback yet.\n")?;
-        journal.transition(&spec.id, spec.attempt, crate::state::State::Running)?;
+        journal.transition(&spec.id, spec.attempt, state::State::Running)?;
         let started = Instant::now();
         let mut final_status = "failed";
         let mut setup_ok = true;
         let mut failed_phase: Option<String> = None;
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
+        let mut truncated = false;
+        let mut termination = None;
         for setup in &workflow.setup {
+            if cancellation.is_cancelled() || tokio::time::Instant::now() >= deadline {
+                termination = Some(if cancellation.is_cancelled() {
+                    ExecutionTermination::Cancelled
+                } else {
+                    ExecutionTermination::TimedOut
+                });
+                failed_phase = Some("setup".into());
+                break;
+            }
             self.set_log_phase("setup");
-            let (status, command_stdout, command_stderr) = self.exec_command(&id, setup).await?;
-            stdout.extend_from_slice(&command_stdout);
-            stderr.extend_from_slice(&command_stderr);
-            if status != 0 {
+            let result = self
+                .exec_command(&id, setup, &cancellation, deadline)
+                .await?;
+            truncated |= result.truncated;
+            truncated |= append_bounded(
+                &mut stdout,
+                &result.stdout,
+                self.config.limits.max_log_bytes,
+            );
+            truncated |= append_bounded(
+                &mut stderr,
+                &result.stderr,
+                self.config.limits.max_log_bytes,
+            );
+            if let Some(reason) = result.termination {
+                termination = Some(reason);
+                failed_phase = Some("setup".into());
+                break;
+            }
+            if result.status != 0 {
                 setup_ok = false;
                 failed_phase = Some("setup".into());
             }
         }
-        if !setup_ok {
+        if termination.is_none() && !setup_ok {
             std::fs::write(&feedback, "Workflow setup command failed.\n")?;
         }
-        if setup_ok && let Some(initialize) = &workflow.initialize {
+        if termination.is_none()
+            && !cancellation.is_cancelled()
+            && setup_ok
+            && let Some(initialize) = &workflow.initialize
+        {
             self.set_log_phase("initialize");
             info!(job_id=%spec.id, "workflow agent context initialization started");
-            let (status, output_stdout, output_stderr) = self.exec_command(&id, initialize).await?;
-            stdout.extend_from_slice(&output_stdout);
-            stderr.extend_from_slice(&output_stderr);
-            if status != 0 {
+            let result = self
+                .exec_command(&id, initialize, &cancellation, deadline)
+                .await?;
+            truncated |= result.truncated;
+            truncated |= append_bounded(
+                &mut stdout,
+                &result.stdout,
+                self.config.limits.max_log_bytes,
+            );
+            truncated |= append_bounded(
+                &mut stderr,
+                &result.stderr,
+                self.config.limits.max_log_bytes,
+            );
+            if let Some(reason) = result.termination {
+                termination = Some(reason);
+                failed_phase = Some("initialize".into());
+            } else if result.status != 0 {
                 setup_ok = false;
                 failed_phase = Some("initialize".into());
                 std::fs::write(
                     &feedback,
                     format!(
-                        "Agent context initialization failed with exit code {status}.\n{}",
-                        String::from_utf8_lossy(&output_stdout)
+                        "Agent context initialization failed with exit code {}.\n{}",
+                        result.status,
+                        String::from_utf8_lossy(&result.stdout)
                     ),
                 )?;
             }
         }
         for iteration in 1..=workflow.max_iterations {
-            if !setup_ok {
+            if !setup_ok || cancellation.is_cancelled() || termination.is_some() {
                 break;
             }
             info!(job_id=%spec.id, iteration, "workflow agent started");
             self.set_log_phase("agent");
-            let (agent_status, agent_stdout, agent_stderr) =
-                self.exec_command(&id, &workflow.agent).await?;
-            stdout.extend_from_slice(&agent_stdout);
-            stderr.extend_from_slice(&agent_stderr);
-            let mut all_passed = agent_status == 0;
-            if agent_status != 0 {
+            let agent = self
+                .exec_command(&id, &workflow.agent, &cancellation, deadline)
+                .await?;
+            truncated |= agent.truncated;
+            truncated |=
+                append_bounded(&mut stdout, &agent.stdout, self.config.limits.max_log_bytes);
+            truncated |=
+                append_bounded(&mut stderr, &agent.stderr, self.config.limits.max_log_bytes);
+            if let Some(reason) = agent.termination {
+                termination = Some(reason);
+                failed_phase = Some("agent".into());
+                break;
+            }
+            let mut all_passed = agent.status == 0;
+            if agent.status != 0 {
                 failed_phase = Some("agent".into());
             }
-            let mut report = format!("Iteration {iteration} agent exit code: {agent_status}\n");
+            let mut report = format!("Iteration {iteration} agent exit code: {}\n", agent.status);
             for verifier in &workflow.verifiers {
                 self.set_log_phase("verifier");
                 let command = CommandSpec {
                     command: verifier.command.clone(),
                     working_directory: verifier.working_directory.clone(),
                 };
-                let (status, output_stdout, output_stderr) =
-                    self.exec_command(&id, &command).await?;
-                stdout.extend_from_slice(&output_stdout);
-                stderr.extend_from_slice(&output_stderr);
+                let result = self
+                    .exec_command(&id, &command, &cancellation, deadline)
+                    .await?;
+                truncated |= result.truncated;
+                truncated |= append_bounded(
+                    &mut stdout,
+                    &result.stdout,
+                    self.config.limits.max_log_bytes,
+                );
+                truncated |= append_bounded(
+                    &mut stderr,
+                    &result.stderr,
+                    self.config.limits.max_log_bytes,
+                );
+                if let Some(reason) = result.termination {
+                    termination = Some(reason);
+                    failed_phase = Some("verifier".into());
+                    break;
+                }
                 report.push_str(&format!(
-                    "\nVerifier {} exit code: {status}\nstdout:\n{}\nstderr:\n{}\n",
+                    "\nVerifier {} exit code: {}\nstdout:\n{}\nstderr:\n{}\n",
                     verifier.name,
-                    String::from_utf8_lossy(&output_stdout),
-                    String::from_utf8_lossy(&output_stderr)
+                    result.status,
+                    String::from_utf8_lossy(&result.stdout),
+                    String::from_utf8_lossy(&result.stderr)
                 ));
-                if verifier.required && status != 0 {
+                if verifier.required && result.status != 0 {
                     all_passed = false;
                     failed_phase = Some("verifier".into());
                 }
             }
             for verifier in &self.config.security.mandatory_verifiers {
+                if termination.is_some() {
+                    break;
+                }
                 self.set_log_phase("verifier");
-                let (status, output_stdout, output_stderr) =
-                    self.exec_command(&id, verifier).await?;
-                stdout.extend_from_slice(&output_stdout);
-                stderr.extend_from_slice(&output_stderr);
+                let result = self
+                    .exec_command(&id, verifier, &cancellation, deadline)
+                    .await?;
+                truncated |= result.truncated;
+                truncated |= append_bounded(
+                    &mut stdout,
+                    &result.stdout,
+                    self.config.limits.max_log_bytes,
+                );
+                truncated |= append_bounded(
+                    &mut stderr,
+                    &result.stderr,
+                    self.config.limits.max_log_bytes,
+                );
+                if let Some(reason) = result.termination {
+                    termination = Some(reason);
+                    failed_phase = Some("verifier".into());
+                    break;
+                }
                 report.push_str(&format!(
-                    "\nMandatory verifier {:?} exit code: {status}\nstdout:\n{}\nstderr:\n{}\n",
+                    "\nMandatory verifier {:?} exit code: {}\nstdout:\n{}\nstderr:\n{}\n",
                     verifier.command,
-                    String::from_utf8_lossy(&output_stdout),
-                    String::from_utf8_lossy(&output_stderr)
+                    result.status,
+                    String::from_utf8_lossy(&result.stdout),
+                    String::from_utf8_lossy(&result.stderr)
                 ));
-                if status != 0 {
+                if result.status != 0 {
                     all_passed = false;
                     failed_phase = Some("verifier".into());
                 }
             }
-            if all_passed && let Some(publish) = &workflow.publish {
+            if termination.is_none()
+                && all_passed
+                && let Some(publish) = &workflow.publish
+            {
                 self.set_log_phase("publish");
-                let (publish_status, publish_stdout, publish_stderr) =
-                    self.exec_command(&id, publish).await?;
-                stdout.extend_from_slice(&publish_stdout);
-                stderr.extend_from_slice(&publish_stderr);
-                all_passed = publish_status == 0;
-                if publish_status != 0 {
+                let result = self
+                    .exec_command(&id, publish, &cancellation, deadline)
+                    .await?;
+                truncated |= result.truncated;
+                truncated |= append_bounded(
+                    &mut stdout,
+                    &result.stdout,
+                    self.config.limits.max_log_bytes,
+                );
+                truncated |= append_bounded(
+                    &mut stderr,
+                    &result.stderr,
+                    self.config.limits.max_log_bytes,
+                );
+                if let Some(reason) = result.termination {
+                    termination = Some(reason);
+                    failed_phase = Some("publish".into());
+                } else {
+                    all_passed = result.status == 0;
+                }
+                if !all_passed && termination.is_none() {
                     failed_phase = Some("publish".into());
                 }
             }
-            if all_passed {
+            if termination.is_none() && all_passed {
                 final_status = "completed";
                 break;
             }
@@ -1168,7 +1819,24 @@ impl DockerExecutor {
             }
             info!(job_id=%spec.id, next_iteration=iteration + 1, "verifier feedback written");
         }
-        journal.transition(&spec.id, spec.attempt, crate::state::State::Collecting)?;
+        if termination.is_none() && cancellation.is_cancelled() {
+            termination = Some(ExecutionTermination::Cancelled);
+        }
+        if termination.is_none() && tokio::time::Instant::now() >= deadline {
+            termination = Some(ExecutionTermination::TimedOut);
+        }
+        if let Some(reason) = termination {
+            final_status = match reason {
+                ExecutionTermination::Cancelled => "cancelled",
+                ExecutionTermination::TimedOut => "timed_out",
+            };
+            failed_phase = Some(final_status.into());
+            let _ = self
+                .docker
+                .stop_container(&id, Some(StopContainerOptions { t: 5 }))
+                .await;
+        }
+        journal.transition(&spec.id, spec.attempt, state::State::Collecting)?;
         let mut artifact_patterns = spec.artifacts.clone();
         if final_status != "completed" {
             write_failure_diagnostics(
@@ -1193,12 +1861,8 @@ impl DockerExecutor {
             .unwrap_or_default(),
             None => Vec::new(),
         };
-        journal.transition(
-            &spec.id,
-            spec.attempt,
-            crate::state::State::from_str(final_status),
-        )?;
-        journal.transition(&spec.id, spec.attempt, crate::state::State::Destroying)?;
+        journal.transition(&spec.id, spec.attempt, state::State::from_str(final_status))?;
+        journal.transition(&spec.id, spec.attempt, state::State::Destroying)?;
         let image_id = self
             .docker
             .inspect_container(&id, None)
@@ -1219,23 +1883,43 @@ impl DockerExecutor {
         if let Some(n) = network {
             let _ = self.docker.remove_network(&n).await;
         }
-        journal.transition(&spec.id, spec.attempt, crate::state::State::Destroyed)?;
+        journal.transition(&spec.id, spec.attempt, state::State::Destroyed)?;
         Ok(JobResult {
             job_id: spec.id,
             attempt: spec.attempt,
             status: final_status.into(),
-            exit_code: Some(if final_status == "completed" { 0 } else { 1 }),
+            exit_code: (final_status != "cancelled" && final_status != "timed_out")
+                .then_some(if final_status == "completed" { 0 } else { 1 }),
             started_at: chrono::Utc::now().to_rfc3339(),
             finished_at: chrono::Utc::now().to_rfc3339(),
             duration_ms: started.elapsed().as_millis(),
-            log_truncated: false,
+            log_truncated: truncated || self.dropped_log_chunks.load(Ordering::Relaxed) > 0,
             stdout: String::from_utf8_lossy(&stdout).into_owned(),
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
-            error_summary: crate::job::error_summary(
+            error_summary: runner_protocol::error_summary(
                 final_status,
                 &String::from_utf8_lossy(&stdout),
                 &String::from_utf8_lossy(&stderr),
             ),
+            failure: (final_status != "completed").then(|| FailureInfo {
+                kind: match final_status {
+                    "cancelled" => FailureKind::Cancellation,
+                    "timed_out" => FailureKind::Timeout,
+                    _ => FailureKind::Execution,
+                },
+                code: match final_status {
+                    "cancelled" => "cancelled",
+                    "timed_out" => "timeout",
+                    _ => "workflow_failed",
+                }
+                .into(),
+                message: match final_status {
+                    "cancelled" => "execution cancelled",
+                    "timed_out" => "execution timed out",
+                    _ => "workflow failed",
+                }
+                .into(),
+            }),
             failed_phase: (final_status != "completed")
                 .then(|| failed_phase.unwrap_or_else(|| "workflow".into())),
             artifacts: files,

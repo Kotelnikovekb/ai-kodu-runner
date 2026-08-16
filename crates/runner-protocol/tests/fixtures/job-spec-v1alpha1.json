@@ -1,0 +1,28 @@
+{
+  "api_version": "omniroute.dev/v1alpha1",
+  "id": "fixture-job",
+  "attempt": 1,
+  "executor": "docker",
+  "image": "example/runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "command": ["sh", "-lc", "printf fixture"],
+  "working_directory": "/workspace",
+  "workspace": {
+    "kind": "local",
+    "path": "."
+  },
+  "environment_from_runner": [],
+  "secrets": [],
+  "resources": {
+    "cpu": 1.0,
+    "memory_mb": 256,
+    "pids": 64,
+    "timeout_seconds": 60
+  },
+  "network": {
+    "mode": "none"
+  },
+  "artifacts": [],
+  "writable_rootfs": false,
+  "workflow": null
+}
+

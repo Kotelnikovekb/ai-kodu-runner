@@ -13,35 +13,26 @@
 # limitations under the License.
 
 [package]
-name = "ai-codu-runer"
+name = "runner-core"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["KotelnikoffDev <kotelnikoff.dev@gmail.com>"]
 
-[workspace]
-resolver = "2"
-members = [
-    ".",
-    "crates/executor-docker",
-    "crates/runner-core",
-    "crates/runner-protocol",
-]
-
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
-clap = { version = "4", features = ["derive"] }
+futures-util = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
-runner-protocol = { path = "crates/runner-protocol" }
-runner-core = { path = "crates/runner-core" }
-executor-docker = { path = "crates/executor-docker" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+runner-protocol = { path = "../runner-protocol" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "process", "fs"] }
+tar = "0.4"
+tempfile = "3"
+tokio = { version = "1", features = ["fs", "process", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-
-[dev-dependencies]
-assert_matches = "1"
+toml = "0.8"
+uuid = { version = "1", features = ["v4", "serde"] }
+url = "2"
+walkdir = "2"

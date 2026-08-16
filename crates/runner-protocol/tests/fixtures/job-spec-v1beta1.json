@@ -1,0 +1,30 @@
+{
+  "api_version": "omniroute.dev/v1beta1",
+  "id": "fixture-beta-job",
+  "attempt": 2,
+  "image": "example/runner@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "command": ["sh", "-lc", "printf beta-fixture"],
+  "working_directory": "/workspace",
+  "workspace": {
+    "kind": "local",
+    "path": "."
+  },
+  "environment_from_runner": [],
+  "secrets": [],
+  "resources": {
+    "cpu": 1.0,
+    "memory_mb": 256,
+    "pids": 64,
+    "timeout_seconds": 60
+  },
+  "network": {
+    "mode": "none"
+  },
+  "artifacts": [],
+  "writable_rootfs": false,
+  "workflow": null,
+  "execution": {
+    "isolation": "container",
+    "capabilities": ["artifacts", "streaming_logs"]
+  }
+}

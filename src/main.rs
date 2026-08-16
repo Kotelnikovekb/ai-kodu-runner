@@ -11,7 +11,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-mod artifacts;
 mod cli;
 mod config;
 mod control;
@@ -19,17 +18,12 @@ mod executor;
 mod janitor;
 mod job;
 mod journal;
-mod policy;
-mod state;
 mod telemetry;
-mod workspace;
 
 use anyhow::Result;
 use clap::Parser;
 use cli::{Cli, Command};
 use config::RunnerConfig;
-use executor::Executor;
-use executor::docker::DockerExecutor;
 use tracing::info;
 
 #[tokio::main]
@@ -38,7 +32,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Version => println!("ai-codu-runer {}", env!("CARGO_PKG_VERSION")),
-        Command::Doctor => DockerExecutor::doctor().await?,
+        Command::Doctor => executor::doctor().await?,
         Command::Run { job, config } => {
             let config = config.map_or_else(
                 || Ok(RunnerConfig::default_local()),
@@ -50,12 +44,14 @@ async fn main() -> Result<()> {
                 spec.attempt = journal.next_attempt(&spec.id)?;
                 info!(job_id=%spec.id, attempt=spec.attempt, "allocated local job attempt");
             }
-            let result = DockerExecutor::new(config)?.run(spec, None).await?;
+            let factory = executor::factory(config, None)?;
+            let result = factory.select_for(&spec)?.run(spec, None).await?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Command::Cleanup { config } => {
             let config = RunnerConfig::load(&config)?;
-            janitor::cleanup(&config).await?;
+            let factory = executor::factory(config, None)?;
+            janitor::cleanup(factory.get("docker")?.as_ref()).await?;
         }
         Command::Daemon { config } => {
             let config = RunnerConfig::load(&config)?;

@@ -1,0 +1,19 @@
+{
+  "job_id": "fixture-job",
+  "attempt": 1,
+  "status": "completed",
+  "exit_code": 0,
+  "started_at": "2026-01-01T00:00:00Z",
+  "finished_at": "2026-01-01T00:00:01Z",
+  "duration_ms": 1000,
+  "log_truncated": false,
+  "stdout": "fixture",
+  "stderr": "",
+  "artifacts": [],
+  "sandbox": {
+    "executor": "docker",
+    "container_id": "container-id",
+    "image_id": "image-id"
+  }
+}
+

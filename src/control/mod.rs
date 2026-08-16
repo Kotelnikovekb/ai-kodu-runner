@@ -14,12 +14,14 @@
 pub mod http;
 pub mod mock;
 use crate::job::{JobResult, JobSpec, LogChunk};
-use crate::{config::RunnerConfig, executor::Executor};
+use crate::{config::RunnerConfig, executor};
 use anyhow::Result;
+use runner_core::policy::{self, ValidationContext};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 const LOG_QUEUE_CAPACITY: usize = 256;
@@ -27,6 +29,19 @@ const LOG_UPLOAD_ATTEMPTS: usize = 3;
 const LOG_UPLOAD_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
 const LOG_UPLOAD_RETRY_DELAY: Duration = Duration::from_secs(1);
 const LOG_FLUSH_TIMEOUT: Duration = Duration::from_secs(15);
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+const HEARTBEAT_FAILURE_LIMIT: usize = 3;
+const COMPLETION_ATTEMPTS: usize = 5;
+const COMPLETION_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
+const COMPLETION_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeartbeatDecision {
+    Continue,
+    Cancel,
+    LeaseLost,
+}
 
 #[derive(Debug, Clone)]
 pub struct LeasedJob {
@@ -36,6 +51,7 @@ pub struct LeasedJob {
 #[async_trait::async_trait]
 pub trait ControlPlane: Send + Sync {
     async fn lease(&self) -> Result<Option<LeasedJob>>;
+    async fn heartbeat(&self, lease_id: &str) -> Result<HeartbeatDecision>;
     async fn complete(&self, lease_id: &str, result: &JobResult) -> Result<()>;
     async fn log_chunk(&self, lease_id: &str, job_id: &str, chunk: &LogChunk) -> Result<()>;
 }
@@ -43,16 +59,23 @@ pub async fn run_daemon(config: RunnerConfig) -> Result<()> {
     let plane_client: Arc<dyn ControlPlane> = Arc::new(http::HttpControlPlane::new(&config)?);
     let concurrency = config.concurrency.unwrap_or(1).max(1);
     let permits = Arc::new(Semaphore::new(concurrency));
+    let shutdown = CancellationToken::new();
+    let signal_shutdown = shutdown.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            signal_shutdown.cancel();
+        }
+    });
     let mut jobs = JoinSet::new();
 
     loop {
         let permit = tokio::select! {
-            _ = tokio::signal::ctrl_c() => break,
+            _ = shutdown.cancelled() => break,
             permit = permits.clone().acquire_owned() => permit.expect("runner semaphore is never closed"),
         };
 
         let lease = tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
+            _ = shutdown.cancelled() => {
                 drop(permit);
                 break;
             }
@@ -65,7 +88,7 @@ pub async fn run_daemon(config: RunnerConfig) -> Result<()> {
             },
             Ok(None) => {
                 drop(permit);
-                if wait_or_shutdown(Duration::from_secs(1)).await {
+                if wait_or_shutdown(&shutdown, Duration::from_secs(1)).await {
                     break;
                 }
                 continue;
@@ -73,7 +96,7 @@ pub async fn run_daemon(config: RunnerConfig) -> Result<()> {
             Err(error) => {
                 drop(permit);
                 warn!(%error, "job lease failed; retrying");
-                if wait_or_shutdown(Duration::from_secs(3)).await {
+                if wait_or_shutdown(&shutdown, Duration::from_secs(3)).await {
                     break;
                 }
                 continue;
@@ -82,8 +105,9 @@ pub async fn run_daemon(config: RunnerConfig) -> Result<()> {
 
         let client = plane_client.clone();
         let job_config = config.clone();
+        let job_shutdown = shutdown.child_token();
         jobs.spawn(async move {
-            if let Err(error) = run_leased_job(client, job_config, job).await {
+            if let Err(error) = run_leased_job(client, job_config, job, job_shutdown).await {
                 warn!(%error, "leased job worker failed");
             }
             drop(permit);
@@ -102,12 +126,43 @@ async fn run_leased_job(
     plane: Arc<dyn ControlPlane>,
     config: RunnerConfig,
     job: LeasedJob,
+    cancellation: CancellationToken,
 ) -> Result<()> {
+    let heartbeat_plane = plane.clone();
+    let heartbeat_lease = job.lease_id.clone();
+    let heartbeat_cancel = cancellation.clone();
+    let heartbeat = tokio::spawn(async move {
+        let mut failures = 0usize;
+        loop {
+            tokio::select! {
+                _ = heartbeat_cancel.cancelled() => break HeartbeatDecision::Cancel,
+                _ = tokio::time::sleep(HEARTBEAT_INTERVAL) => {
+                    match heartbeat_plane.heartbeat(&heartbeat_lease).await {
+                        Ok(HeartbeatDecision::Continue) => failures = 0,
+                        Ok(decision @ (HeartbeatDecision::Cancel | HeartbeatDecision::LeaseLost)) => {
+                            warn!(lease_id = %heartbeat_lease, ?decision, "lease no longer active");
+                            heartbeat_cancel.cancel();
+                            break decision;
+                        }
+                        Err(error) => {
+                            failures += 1;
+                            warn!(lease_id = %heartbeat_lease, failures, %error, "lease heartbeat failed");
+                            if failures >= HEARTBEAT_FAILURE_LIMIT {
+                                heartbeat_cancel.cancel();
+                                break HeartbeatDecision::LeaseLost;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
     let (log_sender, mut log_receiver) = tokio::sync::mpsc::channel(LOG_QUEUE_CAPACITY);
     let log_plane = plane.clone();
     let log_lease = job.lease_id.clone();
     let log_job_id = job.spec.id.clone();
     let mut log_upload = tokio::spawn(async move {
+        let mut loss = false;
         while let Some(chunk) = log_receiver.recv().await {
             let mut delivered = false;
             for attempt in 1..=LOG_UPLOAD_ATTEMPTS {
@@ -133,50 +188,80 @@ async fn run_leased_job(
                 }
             }
             if !delivered {
+                loss = true;
                 warn!(job_id = %log_job_id, sequence = chunk.sequence, "dropping log chunk after retry budget was exhausted");
             }
         }
+        loss
     });
-    let result = match crate::executor::docker::DockerExecutor::with_log_sender(
-        config.clone(),
-        Some(log_sender.clone()),
-    ) {
-        Ok(executor) => match executor.run(job.spec.clone(), None).await {
-            Ok(result) => result,
+    let mut result =
+        match policy::validate_with_context(&job.spec, &config, ValidationContext::Daemon) {
+            Ok(_) => match executor::factory(config.clone(), Some(log_sender.clone())) {
+                Ok(factory) => match factory.select_for(&job.spec) {
+                    Ok(executor) => match executor
+                        .run(job.spec.clone(), Some(cancellation.clone()))
+                        .await
+                    {
+                        Ok(result) => result,
+                        Err(error) => {
+                            warn!(job_id = %job.spec.id, %error, "job execution failed");
+                            crate::job::JobResult::failed_from_error(&job.spec, error)
+                        }
+                    },
+                    Err(error) => {
+                        warn!(job_id = %job.spec.id, %error, "executor admission failed");
+                        crate::job::JobResult::failed_from_error(&job.spec, error)
+                    }
+                },
+                Err(error) => {
+                    warn!(job_id = %job.spec.id, %error, "executor initialization failed");
+                    crate::job::JobResult::failed_from_error(&job.spec, error)
+                }
+            },
             Err(error) => {
-                warn!(job_id = %job.spec.id, %error, "job execution failed");
+                warn!(job_id = %job.spec.id, %error, "daemon job admission failed");
                 crate::job::JobResult::failed_from_error(&job.spec, error)
             }
-        },
-        Err(error) => {
-            warn!(job_id = %job.spec.id, %error, "executor initialization failed");
-            crate::job::JobResult::failed_from_error(&job.spec, error)
-        }
-    };
+        };
     drop(log_sender);
-    if tokio::time::timeout(LOG_FLUSH_TIMEOUT, &mut log_upload)
+    let log_loss = tokio::time::timeout(LOG_FLUSH_TIMEOUT, &mut log_upload)
         .await
-        .is_err()
-    {
+        .map(|result| result.unwrap_or(true))
+        .unwrap_or(true);
+    if log_loss {
         warn!(job_id = %job.spec.id, "log flush deadline exceeded; completing job without remaining log chunks");
         log_upload.abort();
         let _ = log_upload.await;
     }
+    cancellation.cancel();
+    let _ = heartbeat.await;
+    if log_loss {
+        result.log_truncated = true;
+    }
 
-    loop {
-        match plane.complete(&job.lease_id, &result).await {
-            Ok(()) => return Ok(()),
-            Err(error) => {
+    for attempt in 1..=COMPLETION_ATTEMPTS {
+        match tokio::time::timeout(
+            COMPLETION_ATTEMPT_TIMEOUT,
+            plane.complete(&job.lease_id, &result),
+        )
+        .await
+        {
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(error)) => {
                 warn!(job_id = %job.spec.id, %error, "job completion failed; retrying");
-                tokio::time::sleep(Duration::from_secs(3)).await;
             }
+            Err(_) => warn!(job_id = %job.spec.id, "job completion timed out; retrying"),
+        }
+        if attempt < COMPLETION_ATTEMPTS {
+            tokio::time::sleep(COMPLETION_RETRY_DELAY).await;
         }
     }
+    anyhow::bail!("job completion retry budget exhausted")
 }
 
-async fn wait_or_shutdown(duration: Duration) -> bool {
+async fn wait_or_shutdown(shutdown: &CancellationToken, duration: Duration) -> bool {
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => true,
+        _ = shutdown.cancelled() => true,
         _ = tokio::time::sleep(duration) => false,
     }
 }

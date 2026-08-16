@@ -11,13 +11,23 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use crate::{
-    config::RunnerConfig,
-    job::{JobSpec, Resources, WorkspaceSpec},
-};
+use crate::config::RunnerConfig;
 use anyhow::{Result, bail};
+use runner_protocol::{JobSpec, Resources, WorkspaceSpec};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationContext {
+    Local,
+    Daemon,
+}
+
+impl ValidationContext {
+    fn requires_digest(self) -> bool {
+        matches!(self, Self::Daemon)
+    }
+}
 pub fn clamp(r: &Resources, c: &RunnerConfig) -> Resources {
     Resources {
         cpu: r.cpu.min(c.limits.max_cpu).max(0.01),
@@ -27,7 +37,23 @@ pub fn clamp(r: &Resources, c: &RunnerConfig) -> Resources {
     }
 }
 pub fn validate(spec: &JobSpec, c: &RunnerConfig, daemon: bool) -> Result<Resources> {
-    spec.validate(daemon)?;
+    validate_with_context(
+        spec,
+        c,
+        if daemon {
+            ValidationContext::Daemon
+        } else {
+            ValidationContext::Local
+        },
+    )
+}
+
+pub fn validate_with_context(
+    spec: &JobSpec,
+    c: &RunnerConfig,
+    context: ValidationContext,
+) -> Result<Resources> {
+    spec.validate(context.requires_digest())?;
     if !c.security.allow_network && spec.network.mode == "bridge" {
         bail!("network disabled by local policy")
     }
@@ -47,6 +73,9 @@ pub fn validate(spec: &JobSpec, c: &RunnerConfig, daemon: bool) -> Result<Resour
     for secret in &spec.secrets {
         if !c.security.allowed_environment.contains(&secret.name) {
             bail!("secret is not allowed by local policy: {}", secret.name)
+        }
+        if secret.secret_ref.is_some() {
+            bail!("secret_ref is not resolvable by the Community executor")
         }
         if !names.insert(&secret.name) {
             bail!("duplicate secret name: {}", secret.name)
@@ -77,6 +106,9 @@ pub fn environment_for_job(spec: &JobSpec, c: &RunnerConfig) -> Result<Vec<Strin
         if !c.security.allowed_environment.contains(&secret.name) {
             bail!("secret is not allowed by local policy: {}", secret.name)
         }
+        if secret.secret_ref.is_some() {
+            bail!("secret_ref is not resolvable by the Community executor")
+        }
         env.push(format!("{}={}", secret.name, secret.value));
     }
     Ok(env)
@@ -90,6 +122,7 @@ pub fn is_within(path: &Path, root: &Path) -> bool {
 mod tests {
     use super::*;
     use crate::config::RunnerConfig;
+    use runner_protocol::SecretSpec;
     #[test]
     fn clamps() {
         let c = RunnerConfig::default_local();
@@ -104,5 +137,60 @@ mod tests {
         );
         assert_eq!(r.cpu, 4.);
         assert_eq!(r.memory_mb, 8192);
+    }
+
+    #[test]
+    fn community_fails_closed_on_secret_ref() {
+        let mut config = RunnerConfig::default_local();
+        config.security.allowed_environment = vec!["MODEL_KEY".into()];
+        let mut spec = JobSpec::from_json(
+            r#"{
+                "api_version":"omniroute.dev/v1alpha1",
+                "id":"secret-ref",
+                "attempt":1,
+                "executor":"docker",
+                "image":"example/runner:latest",
+                "command":["true"],
+                "working_directory":"/workspace",
+                "workspace":{"kind":"local","path":"."},
+                "resources":{"cpu":1.0,"memory_mb":256,"pids":64,"timeout_seconds":60},
+                "network":{"mode":"none"},
+                "secrets":[]
+            }"#,
+        )
+        .unwrap();
+        spec.secrets = vec![SecretSpec {
+            name: "MODEL_KEY".into(),
+            value: String::new(),
+            secret_ref: Some("vault://model-key".into()),
+        }];
+
+        let error = environment_for_job(&spec, &config).unwrap_err();
+        assert!(error.to_string().contains("not resolvable"));
+    }
+
+    #[test]
+    fn daemon_context_requires_digest_pinned_images() {
+        let config = RunnerConfig::default_local();
+        let spec = JobSpec::from_json(
+            r#"{
+                "api_version":"omniroute.dev/v1alpha1",
+                "id":"mutable-image",
+                "attempt":1,
+                "executor":"docker",
+                "image":"example/runner:latest",
+                "command":["true"],
+                "working_directory":"/workspace",
+                "workspace":{"kind":"local","path":"."},
+                "resources":{"cpu":1.0,"memory_mb":256,"pids":64,"timeout_seconds":60},
+                "network":{"mode":"none"},
+                "secrets":[]
+            }"#,
+        )
+        .unwrap();
+
+        assert!(validate_with_context(&spec, &config, ValidationContext::Local).is_ok());
+        let error = validate_with_context(&spec, &config, ValidationContext::Daemon).unwrap_err();
+        assert!(error.to_string().contains("image digest"));
     }
 }
