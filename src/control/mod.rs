@@ -13,9 +13,10 @@
 // limitations under the License.
 pub mod http;
 pub mod mock;
-use crate::job::{JobResult, JobSpec, LogChunk};
+use crate::job::{FailureInfo, FailureKind, JobResult, JobSpec, LogChunk};
 use crate::{config::RunnerConfig, executor};
 use anyhow::Result;
+use runner_core::journal::Journal;
 use runner_core::policy::{self, ValidationContext};
 use std::sync::Arc;
 use std::time::Duration;
@@ -55,8 +56,44 @@ pub trait ControlPlane: Send + Sync {
     async fn complete(&self, lease_id: &str, result: &JobResult) -> Result<()>;
     async fn log_chunk(&self, lease_id: &str, job_id: &str, chunk: &LogChunk) -> Result<()>;
 }
+
+fn failed_result(
+    spec: &JobSpec,
+    kind: FailureKind,
+    code: &'static str,
+    phase: &'static str,
+    error: impl std::fmt::Display,
+) -> JobResult {
+    let mut result = JobResult::failed_from_failure(
+        spec,
+        FailureInfo {
+            kind,
+            code: code.into(),
+            message: error.to_string(),
+        },
+    );
+    result.failed_phase = Some(phase.into());
+    result
+}
+
+fn failed_executor_result(spec: &JobSpec, error: &anyhow::Error) -> JobResult {
+    if let Some(docker_error) = error.downcast_ref::<executor_docker::DockerFailure>() {
+        let mut result = JobResult::failed_from_failure(spec, docker_error.failure_info());
+        result.failed_phase = Some(docker_error.phase.into());
+        return result;
+    }
+    failed_result(
+        spec,
+        FailureKind::Infrastructure,
+        "executor_operation_failed",
+        "execution",
+        error,
+    )
+}
 pub async fn run_daemon(config: RunnerConfig) -> Result<()> {
     let plane_client: Arc<dyn ControlPlane> = Arc::new(http::HttpControlPlane::new(&config)?);
+    let journal = Journal::open(&config.work_dir.join("runner.db"))?;
+    replay_pending_completions(plane_client.clone(), journal.clone()).await;
     let concurrency = config.concurrency.unwrap_or(1).max(1);
     let permits = Arc::new(Semaphore::new(concurrency));
     let shutdown = CancellationToken::new();
@@ -205,22 +242,50 @@ async fn run_leased_job(
                         Ok(result) => result,
                         Err(error) => {
                             warn!(job_id = %job.spec.id, %error, "job execution failed");
-                            crate::job::JobResult::failed_from_error(&job.spec, error)
+                            if cancellation.is_cancelled() {
+                                failed_result(
+                                    &job.spec,
+                                    FailureKind::Cancellation,
+                                    "cancelled",
+                                    "execution",
+                                    error,
+                                )
+                            } else {
+                                failed_executor_result(&job.spec, &error)
+                            }
                         }
                     },
                     Err(error) => {
                         warn!(job_id = %job.spec.id, %error, "executor admission failed");
-                        crate::job::JobResult::failed_from_error(&job.spec, error)
+                        failed_result(
+                            &job.spec,
+                            FailureKind::Policy,
+                            "executor_admission_rejected",
+                            "admission",
+                            error,
+                        )
                     }
                 },
                 Err(error) => {
                     warn!(job_id = %job.spec.id, %error, "executor initialization failed");
-                    crate::job::JobResult::failed_from_error(&job.spec, error)
+                    failed_result(
+                        &job.spec,
+                        FailureKind::Infrastructure,
+                        "executor_initialization_failed",
+                        "initialization",
+                        error,
+                    )
                 }
             },
             Err(error) => {
                 warn!(job_id = %job.spec.id, %error, "daemon job admission failed");
-                crate::job::JobResult::failed_from_error(&job.spec, error)
+                failed_result(
+                    &job.spec,
+                    FailureKind::Policy,
+                    "job_admission_rejected",
+                    "admission",
+                    error,
+                )
             }
         };
     drop(log_sender);
@@ -239,14 +304,29 @@ async fn run_leased_job(
         result.log_truncated = true;
     }
 
+    let journal = Journal::open(&config.work_dir.join("runner.db"))?;
+    let payload = serde_json::to_string(&result)?;
+    let idempotency_key = http::completion_idempotency_key(&result.job_id, result.attempt);
+    journal.enqueue_completion(
+        &result.job_id,
+        result.attempt,
+        &job.lease_id,
+        &idempotency_key,
+        &payload,
+    )?;
+
     for attempt in 1..=COMPLETION_ATTEMPTS {
+        journal.record_completion_attempt(&result.job_id, result.attempt)?;
         match tokio::time::timeout(
             COMPLETION_ATTEMPT_TIMEOUT,
             plane.complete(&job.lease_id, &result),
         )
         .await
         {
-            Ok(Ok(())) => return Ok(()),
+            Ok(Ok(())) => {
+                journal.mark_completion_delivered(&result.job_id, result.attempt)?;
+                return Ok(());
+            }
             Ok(Err(error)) => {
                 warn!(job_id = %job.spec.id, %error, "job completion failed; retrying");
             }
@@ -257,6 +337,49 @@ async fn run_leased_job(
         }
     }
     anyhow::bail!("job completion retry budget exhausted")
+}
+
+async fn replay_pending_completions(plane: Arc<dyn ControlPlane>, journal: Journal) {
+    let pending = match journal.pending_completions() {
+        Ok(pending) => pending,
+        Err(error) => {
+            warn!(%error, "pending completion outbox unavailable");
+            return;
+        }
+    };
+    for entry in pending {
+        let result = match serde_json::from_str::<JobResult>(&entry.payload) {
+            Ok(result) => result,
+            Err(error) => {
+                warn!(job_id = %entry.job_id, attempt = entry.attempt, %error, "invalid pending completion payload");
+                continue;
+            }
+        };
+        if entry.idempotency_key != http::completion_idempotency_key(&result.job_id, result.attempt)
+        {
+            warn!(
+                job_id = %entry.job_id,
+                attempt = entry.attempt,
+                "pending completion idempotency key does not match payload"
+            );
+            continue;
+        }
+        if let Err(error) = journal.record_completion_attempt(&entry.job_id, entry.attempt) {
+            warn!(job_id = %entry.job_id, attempt = entry.attempt, %error, "cannot record pending completion attempt");
+            continue;
+        }
+        match plane.complete(&entry.lease_id, &result).await {
+            Ok(()) => {
+                if let Err(error) = journal.mark_completion_delivered(&entry.job_id, entry.attempt)
+                {
+                    warn!(job_id = %entry.job_id, attempt = entry.attempt, %error, "cannot mark pending completion delivered");
+                }
+            }
+            Err(error) => {
+                warn!(job_id = %entry.job_id, attempt = entry.attempt, %error, "pending completion replay failed")
+            }
+        }
+    }
 }
 
 async fn wait_or_shutdown(shutdown: &CancellationToken, duration: Duration) -> bool {

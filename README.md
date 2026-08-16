@@ -21,6 +21,9 @@ in [`docs/ROADMAP.md`](docs/ROADMAP.md), [`docs/SECURITY_MODEL.md`](docs/SECURIT
 [`docs/decisions/`](docs/decisions/). In particular, ADR 0002 defines the
 Community/Enterprise boundary, ADR 0003 defines durable Enterprise delivery and
 trust boundaries, and ADR 0004 makes the threat model an implementation gate.
+For local and self-hosted CI operation, see [`docs/COMMUNITY_OPERATIONS.md`](docs/COMMUNITY_OPERATIONS.md).
+The public HTTP contract is published as [OpenAPI 3.1](docs/openapi/community-control-plane.yaml)
+with versioned [JSON schemas](docs/schemas/).
 
 The local example uses the current directory as a workspace and `network: none`. For `workspace.kind = local`, the path must be inside configured `work_dir`. `archive_url` accepts HTTPS tar archives only; absolute paths, `..`, symlinks and hardlinks are rejected.
 
@@ -85,7 +88,7 @@ attempt number for that `job_id` from SQLite, so repeated runs create separate
 directories such as `artifacts/<job_id>/1`, `artifacts/<job_id>/2`, and so on.
 Daemon jobs keep the attempt number supplied by the control plane.
 
-For production, use immutable digest-pinned images in daemon jobs and a control plane that authenticates leases and makes completion idempotent. The HTTP adapter uses bounded connect/request timeouts, renews leases with periodic typed heartbeats, cancels work after an explicit server decision or consecutive heartbeat failures, and sends a stable `Idempotency-Key` derived from `(job_id, attempt)` for bounded completion retries. A completion that exhausts its retry budget is reported as an operational failure; durable pending-completion storage belongs to the Enterprise control plane.
+For production, use immutable digest-pinned images in daemon jobs and a control plane that authenticates leases and makes completion idempotent. The HTTP adapter uses bounded connect/request timeouts, renews leases with periodic typed heartbeats, cancels work after an explicit server decision or consecutive heartbeat failures, and sends a stable `Idempotency-Key` derived from `(job_id, attempt)` for bounded completion retries. Community persists pending completions in its local SQLite journal and replays them on daemon startup; a shared durable completion queue remains an Enterprise control-plane concern.
 
 ### Agent + verifier workflow
 

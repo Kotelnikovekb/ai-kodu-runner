@@ -288,7 +288,7 @@ pub struct FailureInfo {
     pub code: String,
     pub message: String,
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobResult {
     pub job_id: String,
     pub attempt: u32,
@@ -544,7 +544,7 @@ mod tests {
         assert_eq!(error_summary("completed", "", ""), None);
     }
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxResult {
     pub executor: String,
     pub container_id: String,

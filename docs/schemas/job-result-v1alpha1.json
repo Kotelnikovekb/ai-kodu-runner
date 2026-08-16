@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omniroute.dev/schemas/job-result-v1alpha1.json",
+  "title": "AI Kodu Runner JobResult v1alpha1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["job_id", "attempt", "status", "exit_code", "started_at", "finished_at", "duration_ms", "log_truncated", "stdout", "stderr", "artifacts", "sandbox"],
+  "properties": {
+    "job_id": {"type": "string"},
+    "attempt": {"type": "integer", "minimum": 0},
+    "status": {"enum": ["completed", "failed", "cancelled", "timed_out"]},
+    "exit_code": {"type": ["integer", "null"]},
+    "started_at": {"type": "string", "format": "date-time"},
+    "finished_at": {"type": "string", "format": "date-time"},
+    "duration_ms": {"type": "integer", "minimum": 0},
+    "log_truncated": {"type": "boolean"},
+    "stdout": {"type": "string"},
+    "stderr": {"type": "string"},
+    "error_summary": {"type": ["string", "null"]},
+    "failure": {"anyOf": [{"$ref": "./failure-info-v1.json"}, {"type": "null"}]},
+    "failed_phase": {"type": ["string", "null"]},
+    "artifacts": {"type": "array", "items": {"type": "string"}},
+    "artifact_dir": {"type": ["string", "null"]},
+    "sandbox": {"type": "object", "additionalProperties": true}
+  }
+}

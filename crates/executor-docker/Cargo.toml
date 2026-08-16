@@ -18,6 +18,12 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["KotelnikoffDev <kotelnikoff.dev@gmail.com>"]
+description = "Docker executor backend for the AI Kodu Runner Community Edition"
+repository = "https://github.com/Kotelnikovekb/ai-kodu-runner"
+homepage = "https://github.com/Kotelnikovekb/ai-kodu-runner"
+readme = "README.md"
+keywords = ["docker", "executor", "runner", "ci"]
+categories = ["development-tools", "virtualization"]
 
 [dependencies]
 anyhow = "1"
@@ -25,9 +31,10 @@ async-trait = "0.1"
 bollard = "0.18"
 chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
-runner-core = { path = "../runner-core" }
-runner-protocol = { path = "../runner-protocol" }
+runner-core = { path = "../runner-core", version = "0.1.0" }
+runner-protocol = { path = "../runner-protocol", version = "0.1.0" }
 serde_json = "1"
+thiserror = "2"
 tokio = { version = "1", features = ["macros", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"

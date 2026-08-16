@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omniroute.dev/schemas/log-chunk-v1alpha1.json",
+  "title": "AI Kodu Runner LogChunk v1alpha1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["attempt", "sequence", "stream", "phase", "message"],
+  "properties": {
+    "attempt": {"type": "integer", "minimum": 0},
+    "sequence": {"type": "integer", "minimum": 1},
+    "stream": {"enum": ["stdout", "stderr"]},
+    "phase": {"type": "string", "minLength": 1, "maxLength": 64},
+    "level": {"type": ["string", "null"], "maxLength": 32},
+    "message": {"type": "string", "maxLength": 65536}
+  }
+}

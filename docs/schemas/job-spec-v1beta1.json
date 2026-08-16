@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omniroute.dev/schemas/job-spec-v1beta1.json",
+  "title": "AI Kodu Runner JobSpec v1beta1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["api_version", "id", "image", "working_directory", "workspace", "resources", "network", "execution"],
+  "properties": {
+    "api_version": {"const": "omniroute.dev/v1beta1"},
+    "id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "attempt": {"type": "integer", "minimum": 0},
+    "image": {"type": "string", "minLength": 1},
+    "command": {"type": "array", "items": {"type": "string"}},
+    "working_directory": {"type": "string", "minLength": 1},
+    "workspace": {"$ref": "#/$defs/workspace"},
+    "resources": {"$ref": "#/$defs/resources"},
+    "network": {"$ref": "#/$defs/network"},
+    "execution": {"$ref": "#/$defs/execution"},
+    "secrets": {"type": "array", "items": {"$ref": "#/$defs/secret"}},
+    "artifacts": {"type": "array", "items": {"type": "string"}},
+    "writable_rootfs": {"type": "boolean"},
+    "workflow": {"type": ["object", "null"]}
+  },
+  "$defs": {
+    "workspace": {"type": "object", "required": ["kind"], "properties": {"kind": {"enum": ["local", "archive_url", "git"]}}, "additionalProperties": true},
+    "resources": {"type": "object", "required": ["cpu", "memory_mb", "pids", "timeout_seconds"], "properties": {"cpu": {"type": "number", "exclusiveMinimum": 0}, "memory_mb": {"type": "integer", "minimum": 1}, "pids": {"type": "integer", "minimum": 1}, "timeout_seconds": {"type": "integer", "minimum": 1}}, "additionalProperties": false},
+    "network": {"type": "object", "required": ["mode"], "properties": {"mode": {"enum": ["none", "bridge"]}}, "additionalProperties": false},
+    "execution": {"type": "object", "required": ["isolation"], "properties": {"isolation": {"enum": ["container", "sandboxed", "dedicated"]}, "capabilities": {"type": "array", "items": {"type": "string"}}}, "additionalProperties": false},
+    "secret": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}, "value": {"type": "string"}, "secret_ref": {"type": "string"}}, "additionalProperties": false}
+  }
+}

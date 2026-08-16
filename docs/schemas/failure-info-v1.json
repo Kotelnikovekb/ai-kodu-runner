@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omniroute.dev/schemas/failure-info-v1.json",
+  "title": "AI Kodu Runner FailureInfo v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "code", "message"],
+  "properties": {
+    "kind": {"enum": ["validation", "policy", "secret", "execution", "cancellation", "timeout", "infrastructure"]},
+    "code": {"type": "string", "minLength": 1, "maxLength": 128},
+    "message": {"type": "string", "maxLength": 500}
+  }
+}

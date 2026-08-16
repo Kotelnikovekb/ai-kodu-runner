@@ -18,6 +18,12 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["KotelnikoffDev <kotelnikoff.dev@gmail.com>"]
+description = "Versioned JobSpec, JobResult and failure protocol for AI Kodu Runner"
+repository = "https://github.com/Kotelnikovekb/ai-kodu-runner"
+homepage = "https://github.com/Kotelnikovekb/ai-kodu-runner"
+readme = "README.md"
+keywords = ["protocol", "runner", "jobs", "ci"]
+categories = ["data-structures", "development-tools"]
 
 [dependencies]
 anyhow = "1"

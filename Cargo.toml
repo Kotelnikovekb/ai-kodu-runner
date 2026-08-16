@@ -18,6 +18,27 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["KotelnikoffDev <kotelnikoff.dev@gmail.com>"]
+description = "Community self-hosted Docker runner for versioned AI coding jobs"
+repository = "https://github.com/Kotelnikovekb/ai-kodu-runner"
+homepage = "https://github.com/Kotelnikovekb/ai-kodu-runner"
+readme = "README.md"
+keywords = ["docker", "runner", "ci", "automation"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = [
+    "examples/**",
+    "docs/**",
+    ".github/**",
+    ".idea/**",
+    "tool-images/**",
+    "docker/**",
+    "artifacts/**",
+    "AGENTS.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "runner.toml",
+    "runner.db*",
+    "Dockerfile*"
+]
 
 [workspace]
 resolver = "2"
@@ -33,9 +54,9 @@ anyhow = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
-runner-protocol = { path = "crates/runner-protocol" }
-runner-core = { path = "crates/runner-core" }
-executor-docker = { path = "crates/executor-docker" }
+runner-protocol = { path = "crates/runner-protocol", version = "0.1.0" }
+runner-core = { path = "crates/runner-core", version = "0.1.0" }
+executor-docker = { path = "crates/executor-docker", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "process", "fs"] }

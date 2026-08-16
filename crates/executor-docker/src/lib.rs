@@ -42,6 +42,49 @@ use std::{
     time::Instant,
 };
 
+/// Stable, public classification for failures originating in the Docker
+/// backend. The human-readable message is diagnostic only; callers should use
+/// `code` and `phase` for policy, retry and billing decisions.
+#[derive(Debug, thiserror::Error)]
+#[error("Docker {code} during {phase}: {message}")]
+pub struct DockerFailure {
+    pub code: &'static str,
+    pub phase: &'static str,
+    pub message: String,
+    pub retryable: bool,
+}
+
+impl DockerFailure {
+    fn image_pull(error: impl std::fmt::Display) -> Self {
+        Self {
+            code: "image_pull_failed",
+            phase: "image_pull",
+            message: sanitize_docker_error(error),
+            retryable: true,
+        }
+    }
+
+    pub fn failure_info(&self) -> FailureInfo {
+        FailureInfo {
+            kind: FailureKind::Infrastructure,
+            code: self.code.into(),
+            message: format!("{} (phase: {})", self.message, self.phase),
+        }
+    }
+}
+
+fn sanitize_docker_error(error: impl std::fmt::Display) -> String {
+    let message = error.to_string();
+    let mut value = serde_json::Value::String(message);
+    redact_diagnostic_value(&mut value);
+    value
+        .as_str()
+        .unwrap_or("Docker operation failed")
+        .chars()
+        .take(500)
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExecutionTermination {
     Cancelled,
@@ -446,7 +489,7 @@ impl DockerExecutor {
                 let Some(item) = item else {
                     break;
                 };
-                item?;
+                item.map_err(DockerFailure::image_pull)?;
             }
         }
         Ok(None)
@@ -637,10 +680,20 @@ impl DockerExecutor {
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{
-        command_with_opencode_retry, headless_opencode_environment, redact_diagnostic_bytes,
-        redact_diagnostic_value, runtime_tmpfs, safe_feedback_path,
+        DockerFailure, command_with_opencode_retry, headless_opencode_environment,
+        redact_diagnostic_bytes, redact_diagnostic_value, runtime_tmpfs, safe_feedback_path,
     };
     use runner_protocol::JobSpec;
+
+    #[test]
+    fn docker_failure_exposes_stable_code_and_safe_failure_info() {
+        let failure = DockerFailure::image_pull("registry token=secret");
+        assert_eq!(failure.code, "image_pull_failed");
+        assert_eq!(failure.phase, "image_pull");
+        let info = failure.failure_info();
+        assert_eq!(info.kind, runner_protocol::FailureKind::Infrastructure);
+        assert_eq!(info.code, "image_pull_failed");
+    }
 
     #[test]
     fn runtime_tmpfs_includes_writable_opencode_cache() {

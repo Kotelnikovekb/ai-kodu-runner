@@ -1,0 +1,195 @@
+openapi: 3.1.0
+info:
+  title: AI Kodu Runner Community Control Plane API
+  version: 1.0.0
+  description: >-
+    HTTP contract consumed by the Community daemon. The API leases trusted
+    jobs to a runner, receives bounded log chunks, renews leases, and accepts
+    idempotent completion results.
+servers:
+  - url: https://control.example.invalid
+security:
+  - bearerAuth: []
+paths:
+  /v1/runner/lease:
+    post:
+      operationId: leaseJob
+      summary: Lease one job for a runner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LeaseRequest'
+      responses:
+        '200':
+          description: A leased job
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Lease'
+        '204':
+          description: No job is currently available
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /v1/runner/leases/{lease_id}/heartbeat:
+    parameters:
+      - $ref: '#/components/parameters/LeaseId'
+    post:
+      operationId: heartbeatLease
+      summary: Renew a lease and receive a cancellation decision
+      responses:
+        '200':
+          description: Lease decision
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HeartbeatResponse'
+        '204':
+          description: Continue execution (legacy-compatible response)
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Lease was revoked or is no longer current
+        '410':
+          description: Lease expired
+  /v1/runner/jobs/{job_id}/logs:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    post:
+      operationId: appendLogChunk
+      summary: Append one bounded log chunk
+      parameters:
+        - $ref: '#/components/parameters/LeaseHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogChunk'
+      responses:
+        '204':
+          description: Chunk accepted
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Conflicting sequence or lease identity
+        '413':
+          description: Chunk exceeds the server limit
+  /v1/runner/jobs/{job_id}/complete:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    post:
+      operationId: completeJob
+      summary: Complete a leased job idempotently
+      parameters:
+        - $ref: '#/components/parameters/LeaseHeader'
+        - $ref: '#/components/parameters/AttemptHeader'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobResult'
+      responses:
+        '200':
+          description: Completion accepted or identical completion replayed
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Conflicting result for the same job and attempt
+        '410':
+          description: Lease is no longer valid
+        '422':
+          description: Result failed semantic validation
+        '503':
+          description: Retryable control-plane failure
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    LeaseId:
+      name: lease_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 256
+    JobId:
+      name: job_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 256
+    LeaseHeader:
+      name: x-lease-id
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 256
+    AttemptHeader:
+      name: x-job-attempt
+      in: header
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 256
+  responses:
+    BadRequest:
+      description: Request failed syntactic validation
+    Unauthorized:
+      description: Missing or invalid runner token
+    RateLimited:
+      description: Runner or tenant rate limit exceeded
+  schemas:
+    LeaseRequest:
+      type: object
+      required: [runner_id]
+      properties:
+        runner_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+    Lease:
+      type: object
+      required: [lease_id, spec]
+      properties:
+        lease_id:
+          type: string
+        spec:
+          oneOf:
+            - $ref: '../schemas/job-spec-v1alpha1.json'
+            - $ref: '../schemas/job-spec-v1beta1.json'
+    HeartbeatResponse:
+      type: object
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          enum: [continue, cancel, lease_lost]
+    LogChunk:
+      $ref: '../schemas/log-chunk-v1alpha1.json'
+    JobResult:
+      $ref: '../schemas/job-result-v1alpha1.json'
