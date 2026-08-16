@@ -15,6 +15,13 @@ cargo test
 
 Runnable examples are documented in [`examples/cases/README.md`](examples/cases/README.md): a successful Alpine job, per-job secret injection, an expected failure, and a Flutter/OpenCode verifier template.
 
+Product direction, compatibility, and architectural decisions are documented
+in [`docs/ROADMAP.md`](docs/ROADMAP.md), [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md),
+[`docs/SUPPORT.md`](docs/SUPPORT.md), [`docs/VERSIONING.md`](docs/VERSIONING.md), and
+[`docs/decisions/`](docs/decisions/). In particular, ADR 0002 defines the
+Community/Enterprise boundary, ADR 0003 defines durable Enterprise delivery and
+trust boundaries, and ADR 0004 makes the threat model an implementation gate.
+
 The local example uses the current directory as a workspace and `network: none`. For `workspace.kind = local`, the path must be inside configured `work_dir`. `archive_url` accepts HTTPS tar archives only; absolute paths, `..`, symlinks and hardlinks are rejected.
 
 Git workspaces clone and check out the requested `branch`, then fetch
@@ -39,7 +46,12 @@ ai-codu-runer version
 
 ## Architecture and safety
 
-The service is split into CLI/config, JobSpec/policy, workspace/artifacts, journal/state, control-plane adapters, executor, and janitor modules. `Executor` and `ControlPlane` are the extension points for future gVisor, Firecracker, device, or native executors.
+The Cargo workspace is split into `runner-protocol`, `runner-core`, and
+`executor-docker`; the root package keeps the Community CLI, daemon and HTTP
+adapter. `Executor` and `ControlPlane` are the extension points for future
+backends. Before execution, the factory admits a job only when the selected
+executor satisfies its isolation and capability requirements; the Community
+Docker executor supports container isolation only.
 
 Every job gets a temporary copied workspace, managed labels, a private network when requested, a read-only root filesystem, `/tmp` tmpfs, dropped capabilities, `no-new-privileges`, CPU/memory/PID limits, bounded logs, and a timeout. The runner never accepts a Docker `HostConfig` from the server. It does not mount the host Docker socket, use privileged mode, host network/PID/IPC, arbitrary devices, or arbitrary host mounts. Only configured environment variable names may cross the boundary, and values are never written to the SQLite journal.
 
@@ -64,7 +76,7 @@ logs, locks, and snapshot repositories must not be shared as dependency caches.
 The sample one-shot images use `OPENCODE_DB=:memory:`; remove that override only
 when a product flow explicitly resumes an OpenCode session from durable storage.
 
-Task-specific secrets can be supplied through `JobSpec.secrets`, for example `{ "name": "OPENAI_API_KEY", "value": "..." }`. The value is held in memory and injected only into that job's container; it is excluded from logs, journal transitions, and `JobResult`. Secret names must be allowed by runner policy and are size-limited. For remote production control planes, prefer a future `secret_ref` instead of putting long-lived values into source-controlled job files. The legacy `environment_from_runner` field remains supported for local secrets supplied by the runner process.
+Task-specific secrets can be supplied through `JobSpec.secrets`, for example `{ "name": "OPENAI_API_KEY", "value": "..." }`. The value is held in memory and injected only into that job's container. Known runner-managed values are redacted from failure diagnostics; arbitrary secrets printed by user code cannot be reliably detected. Secret names must be allowed by runner policy and are size-limited. `secret_ref` is part of the protocol for external secret resolvers, but the Community executor rejects it closed because it cannot resolve references safely. Failed results may include a typed `failure` with a stable kind and code. The legacy `environment_from_runner` field remains supported for local secrets supplied by the runner process.
 
 The SQLite journal records the explicit lifecycle `received → preparing → running → collecting → completed|failed|cancelled|timed_out → destroying → destroyed`. Cleanup filters Docker resources by both `omniroute.managed=true` and the local runner ID, so another runner's resources are out of scope. Janitor/cleanup is deliberately conservative; resources are not removed solely because they have a similar name.
 
@@ -73,7 +85,7 @@ attempt number for that `job_id` from SQLite, so repeated runs create separate
 directories such as `artifacts/<job_id>/1`, `artifacts/<job_id>/2`, and so on.
 Daemon jobs keep the attempt number supplied by the control plane.
 
-For production, use immutable digest-pinned images in daemon jobs and a control plane that authenticates leases and makes completion idempotent. The current HTTP adapter contains the lease and completion paths; heartbeat/events are the next transport methods to wire into the server contract.
+For production, use immutable digest-pinned images in daemon jobs and a control plane that authenticates leases and makes completion idempotent. The HTTP adapter uses bounded connect/request timeouts, renews leases with periodic typed heartbeats, cancels work after an explicit server decision or consecutive heartbeat failures, and sends a stable `Idempotency-Key` derived from `(job_id, attempt)` for bounded completion retries. A completion that exhausts its retry budget is reported as an operational failure; durable pending-completion storage belongs to the Enterprise control plane.
 
 ### Agent + verifier workflow
 
@@ -159,6 +171,14 @@ generated/cache directories. A precise prefix such as `"build/**"` can opt in to
 a required generated tree. Prefer narrow source and report patterns so collection
 does not duplicate dependency caches after every job.
 
+Workspace preparation is bounded by `limits.max_workspace_bytes`,
+`limits.max_workspace_files`, and (for HTTPS tar archives)
+`limits.max_archive_download_bytes`. Archive traversal, links and device/FIFO
+entries are rejected. Preparation also observes the job cancellation token and
+deadline, so a stalled Git or archive source cannot run outside the job budget.
+Failure diagnostics contain only bounded, known-secret-redacted stdout/stderr;
+prompt, `AGENTS.md`, and feedback files are never copied into diagnostics.
+
 Git and merge requests remain provider-neutral: use `setup` for clone/fetch/checkout
 and `publish` for push or a provider CLI such as `glab mr create`/`gh pr create`.
 Credentials must be supplied as per-job secrets or runner-approved environment names;
@@ -209,7 +229,7 @@ The unit tests cover policy clamping, lifecycle transitions and archive/path saf
 
 This project is licensed under the Apache License, Version 2.0. See
 [`LICENSE.md`](LICENSE.md). The main third-party components and tool-image
-dependencies are listed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+dependencies are listed in [`docs/THIRD_PARTY_NOTICES.md`](docs/THIRD_PARTY_NOTICES.md).
 
 The published Docker images contain software from their base images and package
 managers. Their exact dependency inventory may change with pinned runtime and
