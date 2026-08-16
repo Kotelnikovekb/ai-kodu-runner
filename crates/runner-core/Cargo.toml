@@ -39,7 +39,7 @@ runner-protocol = { package = "ai-kodu-runner-protocol", path = "../runner-proto
 serde = { version = "1", features = ["derive"] }
 tar = "0.4"
 tempfile = "3"
-tokio = { version = "1", features = ["fs", "process", "time"] }
+tokio = { version = "1", features = ["fs", "macros", "process", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 toml = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }
