@@ -31,7 +31,7 @@ async fn main() -> Result<()> {
     telemetry::init();
     let cli = Cli::parse();
     match cli.command {
-        Command::Version => println!("ai-codu-runer {}", env!("CARGO_PKG_VERSION")),
+        Command::Version => println!("ai-kodu-runner {}", env!("CARGO_PKG_VERSION")),
         Command::Doctor => executor::doctor().await?,
         Command::Run { job, config } => {
             let config = config.map_or_else(

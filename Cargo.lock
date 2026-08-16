@@ -24,23 +24,75 @@ dependencies = [
 ]
 
 [[package]]
-name = "ai-codu-runer"
+name = "ai-kodu-runner"
 version = "0.1.0"
 dependencies = [
+ "ai-kodu-runner-core",
+ "ai-kodu-runner-executor-docker",
+ "ai-kodu-runner-protocol",
  "anyhow",
  "assert_matches",
  "async-trait",
  "clap",
- "executor-docker",
  "reqwest",
- "runner-core",
- "runner-protocol",
  "serde",
  "serde_json",
  "tokio",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "ai-kodu-runner-core"
+version = "0.1.0"
+dependencies = [
+ "ai-kodu-runner-protocol",
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "futures-util",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "tar",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "url",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
+name = "ai-kodu-runner-executor-docker"
+version = "0.1.0"
+dependencies = [
+ "ai-kodu-runner-core",
+ "ai-kodu-runner-protocol",
+ "anyhow",
+ "async-trait",
+ "bollard",
+ "chrono",
+ "futures-util",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "ai-kodu-runner-protocol"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -362,26 +414,6 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "executor-docker"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bollard",
- "chrono",
- "futures-util",
- "runner-core",
- "runner-protocol",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -1207,38 +1239,6 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "runner-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "futures-util",
- "reqwest",
- "runner-protocol",
- "rusqlite",
- "serde",
- "tar",
- "tempfile",
- "tokio",
- "tokio-util",
- "toml",
- "url",
- "uuid",
- "walkdir",
-]
-
-[[package]]
-name = "runner-protocol"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "serde",
- "serde_json",
 ]
 
 [[package]]

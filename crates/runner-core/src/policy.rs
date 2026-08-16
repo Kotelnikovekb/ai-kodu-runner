@@ -145,7 +145,7 @@ mod tests {
         config.security.allowed_environment = vec!["MODEL_KEY".into()];
         let mut spec = JobSpec::from_json(
             r#"{
-                "api_version":"omniroute.dev/v1alpha1",
+                "api_version":"ai-kodu-runner.dev/v1alpha1",
                 "id":"secret-ref",
                 "attempt":1,
                 "executor":"docker",
@@ -174,7 +174,7 @@ mod tests {
         let config = RunnerConfig::default_local();
         let spec = JobSpec::from_json(
             r#"{
-                "api_version":"omniroute.dev/v1alpha1",
+                "api_version":"ai-kodu-runner.dev/v1alpha1",
                 "id":"mutable-image",
                 "attempt":1,
                 "executor":"docker",

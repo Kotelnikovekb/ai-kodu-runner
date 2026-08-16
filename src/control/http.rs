@@ -194,7 +194,7 @@ mod tests {
         let lease: Lease = serde_json::from_str(&document).unwrap();
 
         assert_eq!(lease.lease_id, "lease-beta");
-        assert_eq!(lease.spec.api_version, "omniroute.dev/v1beta1");
+        assert_eq!(lease.spec.api_version, "ai-kodu-runner.dev/v1beta1");
         assert_eq!(lease.spec.executor, "docker");
         assert!(lease.spec.execution.is_some());
     }
@@ -207,7 +207,7 @@ mod tests {
         let lease: Lease = serde_json::from_str(&document).unwrap();
 
         assert_eq!(lease.lease_id, "lease-alpha");
-        assert_eq!(lease.spec.api_version, "omniroute.dev/v1alpha1");
+        assert_eq!(lease.spec.api_version, "ai-kodu-runner.dev/v1alpha1");
         assert_eq!(lease.spec.executor, "docker");
         assert!(lease.spec.execution.is_none());
     }
@@ -217,7 +217,7 @@ mod tests {
         let document = r#"{
             "lease_id": "lease-unknown",
             "spec": {
-                "api_version": "omniroute.dev/v9",
+                "api_version": "ai-kodu-runner.dev/v9",
                 "id": "job-unknown"
             }
         }"#;

@@ -119,7 +119,8 @@ the key above is used only by OpenCode while implementing the task.
 
 This case runs OpenCode inside a Python 3.12 container and gives the job disposable
 PostgreSQL and Redis services. The agent implements the backend described in
-`IMPLEMENTATION_CASE.md`, including sources, evidence bundles, article versions,
+[`docs/IMPLEMENTATION_CASE.md`](../../docs/IMPLEMENTATION_CASE.md), including sources,
+evidence bundles, article versions,
 comments, Celery revisions and quality checks.
 
 Build the image from the repository root:

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 [package]
-name = "runner-protocol"
+name = "ai-kodu-runner-protocol"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
@@ -24,6 +24,9 @@ homepage = "https://github.com/Kotelnikovekb/ai-kodu-runner"
 readme = "README.md"
 keywords = ["protocol", "runner", "jobs", "ci"]
 categories = ["data-structures", "development-tools"]
+
+[lib]
+name = "runner_protocol"
 
 [dependencies]
 anyhow = "1"

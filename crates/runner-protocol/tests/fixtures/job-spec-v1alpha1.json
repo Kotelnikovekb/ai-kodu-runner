@@ -1,5 +1,5 @@
 {
-  "api_version": "omniroute.dev/v1alpha1",
+  "api_version": "ai-kodu-runner.dev/v1alpha1",
   "id": "fixture-job",
   "attempt": 1,
   "executor": "docker",
@@ -25,4 +25,3 @@
   "writable_rootfs": false,
   "workflow": null
 }
-

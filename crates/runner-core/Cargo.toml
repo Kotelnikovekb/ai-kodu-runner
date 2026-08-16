@@ -13,7 +13,7 @@
 # limitations under the License.
 
 [package]
-name = "runner-core"
+name = "ai-kodu-runner-core"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
@@ -25,6 +25,9 @@ readme = "README.md"
 keywords = ["runner", "workspace", "sandbox", "ci"]
 categories = ["development-tools", "filesystem"]
 
+[lib]
+name = "runner_core"
+
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
@@ -32,7 +35,7 @@ futures-util = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
-runner-protocol = { path = "../runner-protocol", version = "0.1.0" }
+runner-protocol = { package = "ai-kodu-runner-protocol", path = "../runner-protocol", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 tar = "0.4"
 tempfile = "3"

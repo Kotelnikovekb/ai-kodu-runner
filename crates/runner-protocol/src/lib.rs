@@ -390,7 +390,7 @@ mod tests {
         let spec: JobSpec = serde_json::from_value(value.clone()).unwrap();
 
         spec.validate(false).unwrap();
-        assert_eq!(spec.api_version, "omniroute.dev/v1alpha1");
+        assert_eq!(spec.api_version, "ai-kodu-runner.dev/v1alpha1");
         assert_eq!(spec.id, "fixture-job");
         assert_eq!(serde_json::to_value(spec).unwrap(), value);
     }
@@ -446,7 +446,7 @@ mod tests {
         let spec: JobSpec = beta.into();
 
         spec.validate(false).unwrap();
-        assert_eq!(spec.api_version, "omniroute.dev/v1beta1");
+        assert_eq!(spec.api_version, "ai-kodu-runner.dev/v1beta1");
         assert_eq!(spec.executor, "docker");
         assert_eq!(
             spec.execution,
@@ -463,14 +463,14 @@ mod tests {
             JobSpec::from_json(include_str!("../tests/fixtures/job-spec-v1beta1.json")).unwrap();
         assert_eq!(spec.id, "fixture-beta-job");
 
-        let error = JobSpec::from_json(r#"{"api_version":"omniroute.dev/v9"}"#).unwrap_err();
+        let error = JobSpec::from_json(r#"{"api_version":"ai-kodu-runner.dev/v9"}"#).unwrap_err();
         assert!(error.to_string().contains("unsupported api_version"));
     }
 
     #[test]
     fn v1beta1_requires_execution_requirements() {
         let mut spec = JobSpec {
-            api_version: "omniroute.dev/v1beta1".into(),
+            api_version: "ai-kodu-runner.dev/v1beta1".into(),
             id: "missing-execution".into(),
             attempt: 1,
             executor: "docker".into(),
@@ -560,10 +560,10 @@ impl JobSpec {
     pub fn from_json(document: &str) -> Result<Self> {
         let value: serde_json::Value = serde_json::from_str(document).context("parse job JSON")?;
         match value.get("api_version").and_then(serde_json::Value::as_str) {
-            Some("omniroute.dev/v1alpha1") => {
+            Some("ai-kodu-runner.dev/v1alpha1") => {
                 serde_json::from_value(value).context("parse v1alpha1 job JSON")
             }
-            Some("omniroute.dev/v1beta1") => {
+            Some("ai-kodu-runner.dev/v1beta1") => {
                 let spec: JobSpecV1beta1 =
                     serde_json::from_value(value).context("parse v1beta1 job JSON")?;
                 Ok(spec.into())
@@ -573,14 +573,15 @@ impl JobSpec {
         }
     }
     pub fn validate(&self, daemon: bool) -> Result<()> {
-        if !["omniroute.dev/v1alpha1", "omniroute.dev/v1beta1"].contains(&self.api_version.as_str())
+        if !["ai-kodu-runner.dev/v1alpha1", "ai-kodu-runner.dev/v1beta1"]
+            .contains(&self.api_version.as_str())
         {
             bail!("unsupported api_version")
         }
         if self.executor != "docker" {
             bail!("unsupported executor")
         }
-        if self.api_version == "omniroute.dev/v1beta1" && self.execution.is_none() {
+        if self.api_version == "ai-kodu-runner.dev/v1beta1" && self.execution.is_none() {
             bail!("v1beta1 execution requirements are required")
         }
         if let Some(execution) = &self.execution {

@@ -37,13 +37,13 @@ jobs:
 
       - name: Verify package manifests
         run: |
-          cargo package -p runner-protocol --allow-dirty
-          cargo package -p runner-core --allow-dirty
-          cargo package -p executor-docker --allow-dirty
-          cargo package -p ai-codu-runer --allow-dirty
+          cargo package -p ai-kodu-runner-protocol --allow-dirty
+          cargo package -p ai-kodu-runner-core --allow-dirty
+          cargo package -p ai-kodu-runner-executor-docker --allow-dirty
+          cargo package -p ai-kodu-runner --allow-dirty
 
       - name: Publish runner-protocol
-        run: cargo publish -p runner-protocol --locked
+        run: cargo publish -p ai-kodu-runner-protocol --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -51,7 +51,7 @@ jobs:
         run: sleep 30
 
       - name: Publish runner-core
-        run: cargo publish -p runner-core --locked
+        run: cargo publish -p ai-kodu-runner-core --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -59,7 +59,7 @@ jobs:
         run: sleep 30
 
       - name: Publish executor-docker
-        run: cargo publish -p executor-docker --locked
+        run: cargo publish -p ai-kodu-runner-executor-docker --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -67,7 +67,7 @@ jobs:
         run: sleep 30
 
       - name: Publish Community binary crate
-        run: cargo publish -p ai-codu-runer --locked
+        run: cargo publish -p ai-kodu-runner --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -110,9 +110,9 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          package="ai-codu-runer-${version}-${{ matrix.target }}"
+          package="ai-kodu-runner-${version}-${{ matrix.target }}"
           mkdir -p dist
-          cp "target/${{ matrix.target }}/release/ai-codu-runer" "${package}"
+          cp "target/${{ matrix.target }}/release/ai-kodu-runner" "${package}"
           tar -czf "dist/${package}.tar.gz" "${package}"
           rm -f "${package}"
           shasum -a 256 "dist/${package}.tar.gz" > "dist/${package}.tar.gz.sha256"
@@ -141,5 +141,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${GITHUB_REF_NAME}" dist/* \
-            --title "ai-codu-runer ${GITHUB_REF_NAME}" \
+            --title "ai-kodu-runner ${GITHUB_REF_NAME}" \
             --generate-notes

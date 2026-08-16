@@ -255,7 +255,7 @@ fn command_with_opencode_retry(command: &[String]) -> Vec<String> {
         || command[0] != "bash"
         || command[1] != "-lc"
         || !command[2].contains("opencode run ")
-        || !command[2].contains(".omniroute/results/opencode.json")
+        || !command[2].contains(".ai-kodu-runner/results/opencode.json")
     {
         return command.to_vec();
     }
@@ -271,7 +271,7 @@ fn command_with_opencode_retry(command: &[String]) -> Vec<String> {
 {script}
 )
 runner_rc=$?
-if [ "$runner_rc" -ne 0 ] && grep -Fq 'Unexpected server error' .omniroute/results/opencode.json 2>/dev/null; then
+if [ "$runner_rc" -ne 0 ] && grep -Fq 'Unexpected server error' .ai-kodu-runner/results/opencode.json 2>/dev/null; then
     echo 'OpenCode reported an unexpected error; retrying once in 2 seconds' >&2
     sleep 2
     (
@@ -421,7 +421,7 @@ impl DockerExecutor {
         let d = Self::connect().await?;
         d.ping().await.context("Docker ping")?;
         let v = d.version().await?;
-        let test = format!("omniroute-doctor-{}", Uuid::new_v4());
+        let test = format!("ai-kodu-runner-doctor-{}", Uuid::new_v4());
         let id = d
             .create_container(
                 Some(CreateContainerOptions::<String> {
@@ -534,7 +534,7 @@ impl DockerExecutor {
                 .docker
                 .create_container(
                     Some(CreateContainerOptions::<String> {
-                        name: format!("omniroute-service-{}-{}", service.name, Uuid::new_v4()),
+                        name: format!("ai-kodu-runner-service-{}-{}", service.name, Uuid::new_v4()),
                         platform: Some(self.config.docker.platform.clone()),
                     }),
                     Config {
@@ -570,10 +570,10 @@ impl DockerExecutor {
                             ..Default::default()
                         }),
                         labels: Some(HashMap::from([
-                            ("omniroute.managed".into(), "true".into()),
-                            ("omniroute.runner_id".into(), self.config.runner_id()),
-                            ("omniroute.job_id".into(), job_id.to_string()),
-                            ("omniroute.service".into(), service.name.clone()),
+                            ("ai-kodu-runner.managed".into(), "true".into()),
+                            ("ai-kodu-runner.runner_id".into(), self.config.runner_id()),
+                            ("ai-kodu-runner.job_id".into(), job_id.to_string()),
+                            ("ai-kodu-runner.service".into(), service.name.clone()),
                         ])),
                         host_config: Some(HostConfig {
                             memory: Some(resources.memory_mb * 1024 * 1024),
@@ -737,7 +737,7 @@ mod tests {
         let command = vec![
             "bash".into(),
             "-lc".into(),
-            "opencode run task | tee .omniroute/results/opencode.json; exit ${PIPESTATUS[0]}"
+            "opencode run task | tee .ai-kodu-runner/results/opencode.json; exit ${PIPESTATUS[0]}"
                 .into(),
         ];
 
@@ -806,7 +806,7 @@ mod tests {
     fn diagnostic_output_redacts_known_secrets_and_is_bounded() {
         let spec = JobSpec::from_json(
             r#"{
-                "api_version":"omniroute.dev/v1alpha1","id":"diag","attempt":0,
+                "api_version":"ai-kodu-runner.dev/v1alpha1","id":"diag","attempt":0,
                 "executor":"docker","image":"example@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "command":["true"],"working_directory":"/workspace",
                 "workspace":{"kind":"local","path":"."},
@@ -861,7 +861,7 @@ impl Executor for DockerExecutor {
     async fn doctor(&self) -> Result<DoctorReport> {
         self.docker.ping().await.context("Docker ping")?;
         let version = self.docker.version().await?;
-        let test_name = format!("omniroute-doctor-{}", Uuid::new_v4());
+        let test_name = format!("ai-kodu-runner-doctor-{}", Uuid::new_v4());
         let test_id = self
             .docker
             .create_container(
@@ -950,7 +950,7 @@ impl Executor for DockerExecutor {
                 ExecutionTermination::TimedOut => "execution timed out",
             }));
         }
-        let network_name = format!("omniroute-net-{}", Uuid::new_v4());
+        let network_name = format!("ai-kodu-runner-net-{}", Uuid::new_v4());
         let network = if spec.network.mode == "bridge" {
             Some(
                 self.docker
@@ -961,9 +961,9 @@ impl Executor for DockerExecutor {
                         internal: false,
                         attachable: false,
                         labels: HashMap::from([
-                            ("omniroute.managed".into(), "true".into()),
-                            ("omniroute.runner_id".into(), self.config.runner_id()),
-                            ("omniroute.job_id".into(), spec.id.clone()),
+                            ("ai-kodu-runner.managed".into(), "true".into()),
+                            ("ai-kodu-runner.runner_id".into(), self.config.runner_id()),
+                            ("ai-kodu-runner.job_id".into(), spec.id.clone()),
                         ]),
                         ..Default::default()
                     })
@@ -973,18 +973,18 @@ impl Executor for DockerExecutor {
         } else {
             None
         };
-        let name = format!("omniroute-job-{}", Uuid::new_v4());
+        let name = format!("ai-kodu-runner-job-{}", Uuid::new_v4());
         let env = headless_opencode_environment(
             policy::environment_for_job(&spec, &self.config)?,
             &spec.command,
         );
         let labels = HashMap::from([
-            ("omniroute.managed".into(), "true".into()),
-            ("omniroute.runner_id".into(), self.config.runner_id()),
-            ("omniroute.job_id".into(), spec.id.clone()),
-            ("omniroute.attempt".into(), spec.attempt.to_string()),
+            ("ai-kodu-runner.managed".into(), "true".into()),
+            ("ai-kodu-runner.runner_id".into(), self.config.runner_id()),
+            ("ai-kodu-runner.job_id".into(), spec.id.clone()),
+            ("ai-kodu-runner.attempt".into(), spec.attempt.to_string()),
             (
-                "omniroute.expires_at".into(),
+                "ai-kodu-runner.expires_at".into(),
                 (chrono::Utc::now() + chrono::Duration::seconds(resources.timeout_seconds as i64))
                     .to_rfc3339(),
             ),
@@ -1295,8 +1295,8 @@ impl Executor for DockerExecutor {
         let filters = HashMap::from([(
             "label".to_string(),
             vec![
-                "omniroute.managed=true".to_string(),
-                format!("omniroute.runner_id={}", self.config.runner_id()),
+                "ai-kodu-runner.managed=true".to_string(),
+                format!("ai-kodu-runner.runner_id={}", self.config.runner_id()),
             ],
         )]);
         let items = self
@@ -1333,8 +1333,8 @@ impl Executor for DockerExecutor {
         let network_filters = HashMap::from([(
             "label".to_string(),
             vec![
-                "omniroute.managed=true".to_string(),
-                format!("omniroute.runner_id={}", self.config.runner_id()),
+                "ai-kodu-runner.managed=true".to_string(),
+                format!("ai-kodu-runner.runner_id={}", self.config.runner_id()),
             ],
         )]);
         let networks = self
@@ -1534,7 +1534,7 @@ impl DockerExecutor {
                 ExecutionTermination::TimedOut => "execution timed out",
             }));
         }
-        let network_name = format!("omniroute-net-{}", Uuid::new_v4());
+        let network_name = format!("ai-kodu-runner-net-{}", Uuid::new_v4());
         let network = if spec.network.mode == "bridge" {
             Some(
                 self.docker
@@ -1545,9 +1545,9 @@ impl DockerExecutor {
                         internal: false,
                         attachable: false,
                         labels: HashMap::from([
-                            ("omniroute.managed".into(), "true".into()),
-                            ("omniroute.runner_id".into(), self.config.runner_id()),
-                            ("omniroute.job_id".into(), spec.id.clone()),
+                            ("ai-kodu-runner.managed".into(), "true".into()),
+                            ("ai-kodu-runner.runner_id".into(), self.config.runner_id()),
+                            ("ai-kodu-runner.job_id".into(), spec.id.clone()),
                         ]),
                         ..Default::default()
                     })
@@ -1610,7 +1610,7 @@ impl DockerExecutor {
             .docker
             .create_container(
                 Some(CreateContainerOptions::<String> {
-                    name: format!("omniroute-job-{}", Uuid::new_v4()),
+                    name: format!("ai-kodu-runner-job-{}", Uuid::new_v4()),
                     platform: Some(self.config.docker.platform.clone()),
                 }),
                 Config::<String> {
@@ -1619,10 +1619,10 @@ impl DockerExecutor {
                     env: Some(env),
                     host_config: Some(host),
                     labels: Some(HashMap::from([
-                        ("omniroute.managed".into(), "true".into()),
-                        ("omniroute.runner_id".into(), self.config.runner_id()),
-                        ("omniroute.job_id".into(), spec.id.clone()),
-                        ("omniroute.attempt".into(), spec.attempt.to_string()),
+                        ("ai-kodu-runner.managed".into(), "true".into()),
+                        ("ai-kodu-runner.runner_id".into(), self.config.runner_id()),
+                        ("ai-kodu-runner.job_id".into(), spec.id.clone()),
+                        ("ai-kodu-runner.attempt".into(), spec.attempt.to_string()),
                     ])),
                     ..Default::default()
                 },

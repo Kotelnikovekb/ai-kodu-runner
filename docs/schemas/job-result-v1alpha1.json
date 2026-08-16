@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://omniroute.dev/schemas/job-result-v1alpha1.json",
+  "$id": "https://ai-kodu-runner.dev/schemas/job-result-v1alpha1.json",
   "title": "AI Kodu Runner JobResult v1alpha1",
   "type": "object",
   "additionalProperties": false,

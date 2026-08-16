@@ -50,7 +50,7 @@ of an unrelated change.
 ## Current project shape
 
 The repository is a Rust 2024 Cargo workspace. The public Community binary
-remains the historical root package `ai-codu-runer`; shared code is split into
+uses the root package `ai-kodu-runner`; shared code is split into
 protocol, core, and Docker executor crates. A separate `runner-cli` crate is
 still deferred.
 
@@ -67,7 +67,7 @@ Key modules:
 - `src/main.rs`, `src/cli.rs`, and compatibility facades: Community CLI and
   root binary wiring.
 
-The package and binary currently use the historical name `ai-codu-runer`.
+The package and binary use the public name `ai-kodu-runner`.
 Renaming it is a compatibility and release change; do not correct the spelling
 incidentally.
 

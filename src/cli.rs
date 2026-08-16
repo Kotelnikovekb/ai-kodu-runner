@@ -16,7 +16,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "ai-codu-runer",
+    name = "ai-kodu-runner",
     version,
     about = "Isolated autonomous AI job runner"
 )]

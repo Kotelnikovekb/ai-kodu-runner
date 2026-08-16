@@ -139,7 +139,7 @@ integration tests в Enterprise CI.
 
 ```json
 {
-  "api_version": "omniroute.dev/v1beta1",
+  "api_version": "ai-kodu-runner.dev/v1beta1",
   "execution": {
     "isolation": "sandboxed",
     "capabilities": ["flutter", "android-build"]
@@ -298,6 +298,11 @@ sharing, protocol authority или sandbox runtime/filesystem.
   `AGENTS.md` и feedback files.
 - [x] Ограничить daemon HTTP calls/completion retries и корректно отражать
   потерю streaming logs в `JobResult.log_truncated`.
+- [x] Зафиксировать Community control-plane API в OpenAPI 3.1 и versioned JSON
+  schemas для `v1alpha1`/`v1beta1` JobSpec, log chunk и JobResult.
+- [x] Добавить локальный SQLite completion outbox с идемпотентной записью,
+  bounded retry и replay после рестарта daemon; shared Enterprise ingestion
+  queue остаётся отдельным control-plane компонентом.
 - [x] Сделать runner identity стабильной на весь процесс и cleanup truthful для
   active/неудалённых Docker resources.
   - [x] Добавить typed failures: `FailureInfo { kind, code, message }`.
@@ -319,14 +324,17 @@ sharing, protocol authority или sandbox runtime/filesystem.
   - [ ] Ввести состояния `finalizing`, `result_durable` и `publishing`.
   - [x] Добавить `secret_ref`; объявить inline secrets deprecated для daemon.
   - [x] Разделить user failure, policy rejection и infrastructure failure.
+  - [x] Добавить стабильный `FailureInfo` schema и Docker infrastructure
+    fallback `executor_operation_failed`; детальная классификация отдельных
+    Docker API phases расширяется аддитивно без изменения user failure.
   - [x] Описать правила обратной совместимости `v1alpha1` и `v1beta1`.
 
 Критерий готовности: рестарт runner-а или временный сетевой сбой не приводит к
 потере результата, повторной публикации или бесконечному удержанию lease.
 
-**Статус:** 🟡 В ПРОЦЕССЕ. Community protocol/control-plane hardening и Docker
-delivery safeguards реализованы; Enterprise event envelope, durable ACK,
-outbox/ingestion и Kubernetes resource contract остаются в работе.
+**Статус:** 🟡 В ПРОЦЕССЕ. Community protocol, OpenAPI contract, local completion
+recovery и Docker delivery safeguards реализованы; Enterprise event envelope,
+durable ACK/ingestion и Kubernetes resource contract остаются в работе.
 
 ### Этап 3. Создать Enterprise skeleton
 

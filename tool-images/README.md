@@ -87,4 +87,4 @@ runner и сканирует его через Trivy. Docker socket внутрь
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 Лицензия проекта — Apache-2.0. Сторонние компоненты перечислены в
-[`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
+[`../docs/THIRD_PARTY_NOTICES.md`](../docs/THIRD_PARTY_NOTICES.md).

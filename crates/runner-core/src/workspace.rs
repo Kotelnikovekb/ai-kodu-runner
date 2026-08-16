@@ -40,7 +40,7 @@ pub async fn prepare(
     // local workspace of `.` would contain its own destination and recurse
     // until macOS reports `File name too long`.
     let dir = tempfile::Builder::new()
-        .prefix("omniroute-job-")
+        .prefix("ai-kodu-runner-job-")
         .tempdir()
         .context("create job directory")?;
     match spec {
@@ -323,7 +323,7 @@ fn exclude_runner_files(dir: &Path) -> Result<()> {
     let mut existing = fs::read_to_string(&exclude_path).unwrap_or_default();
     for pattern in [
         ".cache/",
-        ".omniroute/",
+        ".ai-kodu-runner/",
         ".dart_tool/",
         ".runner-cache/",
         "build/",
@@ -411,7 +411,12 @@ pub(crate) fn is_derived_path(path: &Path) -> bool {
         matches!(
             name.to_str(),
             Some(
-                ".cache" | ".omniroute" | ".dart_tool" | ".runner-cache" | "build" | "node_modules"
+                ".cache"
+                    | ".ai-kodu-runner"
+                    | ".dart_tool"
+                    | ".runner-cache"
+                    | "build"
+                    | "node_modules"
             )
         )
     })

@@ -1,5 +1,5 @@
 {
-  "api_version": "omniroute.dev/v1alpha1",
+  "api_version": "ai-kodu-runner.dev/v1alpha1",
   "id": "case-secret",
   "attempt": 1,
   "executor": "docker",

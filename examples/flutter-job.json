@@ -1,5 +1,5 @@
 {
-  "api_version": "omniroute.dev/v1alpha1",
+  "api_version": "ai-kodu-runner.dev/v1alpha1",
   "id": "flutter-agent-archive",
   "attempt": 0,
   "executor": "docker",
@@ -10,9 +10,9 @@
     "url": "https://storage.example.com/flutter-project.tar?signature=REPLACE"
   },
   "environment_from_runner": [
-    "OMNIROUTE_MCP_KEY",
-    "OMNIROUTE_API_KEY",
-    "OMNIROUTE_BASE_URL",
+    "AI_KODU_RUNNER_MCP_KEY",
+    "AI_KODU_RUNNER_API_KEY",
+    "AI_KODU_RUNNER_BASE_URL",
     "FREEMODEL_API_KEY"
   ],
   "resources": {

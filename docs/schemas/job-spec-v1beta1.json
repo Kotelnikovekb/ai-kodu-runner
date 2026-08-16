@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://omniroute.dev/schemas/job-spec-v1beta1.json",
+  "$id": "https://ai-kodu-runner.dev/schemas/job-spec-v1beta1.json",
   "title": "AI Kodu Runner JobSpec v1beta1",
   "type": "object",
   "additionalProperties": true,
   "required": ["api_version", "id", "image", "working_directory", "workspace", "resources", "network", "execution"],
   "properties": {
-    "api_version": {"const": "omniroute.dev/v1beta1"},
+    "api_version": {"const": "ai-kodu-runner.dev/v1beta1"},
     "id": {"type": "string", "minLength": 1, "maxLength": 256},
     "attempt": {"type": "integer", "minimum": 0},
     "image": {"type": "string", "minLength": 1},

@@ -1,5 +1,5 @@
 {
-  "api_version": "omniroute.dev/v1beta1",
+  "api_version": "ai-kodu-runner.dev/v1beta1",
   "id": "fixture-beta-job",
   "attempt": 2,
   "image": "example/runner@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",

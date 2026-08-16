@@ -73,7 +73,7 @@ fn should_visit(path: &Path, root: &Path, patterns: &[String]) -> bool {
 
     // Broad patterns such as "**" must not pull caches into the result. A job
     // can still deliberately export a generated tree with an exact prefix such
-    // as "build/**" or ".omniroute/results/**".
+    // as "build/**" or ".ai-kodu-runner/results/**".
     rel.ancestors()
         .filter(|path| !path.as_os_str().is_empty())
         .any(|derived_root| {

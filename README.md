@@ -1,6 +1,6 @@
-# ai-codu-runer
+# ai-kodu-runner
 
-`ai-codu-runer` is a small native Rust worker that runs versioned jobs in one-shot Linux containers. On Linux it uses Docker Engine; on macOS Docker Desktop is used through the same Docker Engine API. OpenCode, Node, Flutter and browser tooling belong in prebuilt job images, not in the runner.
+`ai-kodu-runner` is a small native Rust worker that runs versioned jobs in one-shot Linux containers. On Linux it uses Docker Engine; on macOS Docker Desktop is used through the same Docker Engine API. OpenCode, Node, Flutter and browser tooling belong in prebuilt job images, not in the runner.
 
 ## Quick start
 
@@ -38,11 +38,11 @@ a successful no-op; a clean `required` workspace fails explicitly.
 ## Commands
 
 ```text
-ai-codu-runer doctor
-ai-codu-runer run --job ./job.json [--config ./runner.toml]
-ai-codu-runer daemon --config ./runner.toml
-ai-codu-runer cleanup --config ./runner.toml
-ai-codu-runer version
+ai-kodu-runner doctor
+ai-kodu-runner run --job ./job.json [--config ./runner.toml]
+ai-kodu-runner daemon --config ./runner.toml
+ai-kodu-runner cleanup --config ./runner.toml
+ai-kodu-runner version
 ```
 
 `doctor` pings Docker, reports host/API/capabilities, and creates/removes a disposable Alpine container. The daemon leases jobs from the HTTP control plane, sends Bearer-authenticated completion requests, and stops cleanly on Ctrl-C. Docker container architecture is configured with `[docker].platform` and defaults to `linux/amd64`; `RUNNER_PLATFORM` overrides it for local or host-specific deployments. Values must use `os/architecture` format, optionally with a variant such as `linux/arm64/v8`.
@@ -58,7 +58,7 @@ Docker executor supports container isolation only.
 
 Every job gets a temporary copied workspace, managed labels, a private network when requested, a read-only root filesystem, `/tmp` tmpfs, dropped capabilities, `no-new-privileges`, CPU/memory/PID limits, bounded logs, and a timeout. The runner never accepts a Docker `HostConfig` from the server. It does not mount the host Docker socket, use privileged mode, host network/PID/IPC, arbitrary devices, or arbitrary host mounts. Only configured environment variable names may cross the boundary, and values are never written to the SQLite journal.
 
-Workspace staging prunes generated directories named `.cache`, `.omniroute`,
+Workspace staging prunes generated directories named `.cache`, `.ai-kodu-runner`,
 `.dart_tool`, `.runner-cache`, `build`, and `node_modules` at any depth. They must
 be recreated by setup commands or the toolchain inside the isolated job. This
 keeps dependency caches and OpenCode state out of source snapshots.
@@ -81,7 +81,7 @@ when a product flow explicitly resumes an OpenCode session from durable storage.
 
 Task-specific secrets can be supplied through `JobSpec.secrets`, for example `{ "name": "OPENAI_API_KEY", "value": "..." }`. The value is held in memory and injected only into that job's container. Known runner-managed values are redacted from failure diagnostics; arbitrary secrets printed by user code cannot be reliably detected. Secret names must be allowed by runner policy and are size-limited. `secret_ref` is part of the protocol for external secret resolvers, but the Community executor rejects it closed because it cannot resolve references safely. Failed results may include a typed `failure` with a stable kind and code. The legacy `environment_from_runner` field remains supported for local secrets supplied by the runner process.
 
-The SQLite journal records the explicit lifecycle `received → preparing → running → collecting → completed|failed|cancelled|timed_out → destroying → destroyed`. Cleanup filters Docker resources by both `omniroute.managed=true` and the local runner ID, so another runner's resources are out of scope. Janitor/cleanup is deliberately conservative; resources are not removed solely because they have a similar name.
+The SQLite journal records the explicit lifecycle `received → preparing → running → collecting → completed|failed|cancelled|timed_out → destroying → destroyed`. Cleanup filters Docker resources by both `ai-kodu-runner.managed=true` and the local runner ID, so another runner's resources are out of scope. Janitor/cleanup is deliberately conservative; resources are not removed solely because they have a similar name.
 
 For local `run`, set `attempt` to `0` (or omit it). The runner allocates the next
 attempt number for that `job_id` from SQLite, so repeated runs create separate

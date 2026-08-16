@@ -46,10 +46,10 @@ transport, authentication, status codes, retry and idempotency semantics; JSON
 Schema describes versioned payload shape. A change to either is a protocol
 change and requires fixtures and compatibility tests.
 
-- `omniroute.dev/v1alpha1` is the legacy Community protocol.
-- `omniroute.dev/v1beta1` is the next protocol version and introduces typed
+- `ai-kodu-runner.dev/v1alpha1` is the legacy Community protocol.
+- `ai-kodu-runner.dev/v1beta1` is the next protocol version and introduces typed
   execution requirements in place of client-selected executor names.
-- A stable `omniroute.dev/v1` is introduced only after the v1beta1 protocol,
+- A stable `ai-kodu-runner.dev/v1` is introduced only after the v1beta1 protocol,
   fixtures, control-plane behavior, and at least two executor implementations
   have passed the compatibility suite.
 

@@ -21,28 +21,28 @@
         }
       }
     },
-    "omniroute": {
+    "ai-kodu-runner": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "OmniRoute",
+      "name": "AI Kodu Runner",
       "options": {
-        "baseURL": "{env:OMNIROUTE_BASE_URL}",
-        "apiKey": "{env:OMNIROUTE_API_KEY}"
+        "baseURL": "{env:AI_KODU_RUNNER_BASE_URL}",
+        "apiKey": "{env:AI_KODU_RUNNER_API_KEY}"
       },
       "models": {
         "coder": {
           "id": "combo/coder",
-          "name": "OmniRoute Coder"
+          "name": "AI Kodu Runner Coder"
         }
       }
     }
   },
-  "model": "omniroute/coder",
+    "model": "ai-kodu-runner/coder",
   "mcp": {
     "context7": {
       "type": "remote",
       "url": "https://mcp.context7.com/mcp",
       "headers": {
-        "CONTEXT7_API_KEY": "{env:OMNIROUTE_MCP_KEY}"
+        "CONTEXT7_API_KEY": "{env:AI_KODU_RUNNER_MCP_KEY}"
       },
       "enabled": true
     }

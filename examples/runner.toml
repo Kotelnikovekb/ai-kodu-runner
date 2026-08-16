@@ -31,6 +31,9 @@ max_timeout_seconds = 3600
 max_log_bytes = 52428800
 max_artifact_bytes = 524288000
 max_artifact_files = 10000
+max_workspace_bytes = 1073741824
+max_workspace_files = 100000
+max_archive_download_bytes = 536870912
 
 [security]
 allow_network = true
