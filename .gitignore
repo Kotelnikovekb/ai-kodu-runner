@@ -25,3 +25,6 @@
 
 # Skill registry checkout; keep installed project skills, not its Git cache
 **/.dart_skills/repos/
+
+runner.db
+runner.toml
